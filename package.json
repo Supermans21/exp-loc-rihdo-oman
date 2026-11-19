@@ -1,0 +1,17 @@
+{
+  "name": "hegen",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "shopify theme dev --store oman-playground.myshopify.com",
+    "pull": "shopify theme pull --store oman-playground.myshopify.com",
+    "push": "shopify theme push --store oman-playground.myshopify.com",
+    "delete": "shopify theme delete",
+    "tw": "npx tailwindcss -i ./assets/tw-input.css -o ./assets/tw-output.css --watch"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
+}
