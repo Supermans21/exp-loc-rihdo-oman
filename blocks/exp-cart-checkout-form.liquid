@@ -1,0 +1,2897 @@
+{% doc %}
+  Cart Checkout Form & Address Book (Auto-Filled Checkout + Google Maps Current Location)
+  Renders a compact dropdown/button trigger on the Cart page (usable inside `main-cart`,
+  directly inside `_cart-summary` below the Checkout button, or inside a Custom Section).
+  Supports full CRUD Address Book (View, Create, Edit, Delete), `localStorage` for guests,
+  Smart Hybrid Sync with Shopify Customer Accounts, live "Use Current Location" GPS reverse
+  geocoding with interactive Google Maps preview, Emsifa Indonesia Region API v2 cascading
+  selects with auto postal code, and full Shipping + Billing Checkout Auto-Fill.
+
+  @example
+  Add the "Cart Checkout Form" block inside Cart (`main-cart`) or inside Cart Summary (`_cart-summary`).
+{% enddoc %}
+
+{%- liquid
+  assign block_settings = block.settings
+  assign uid = block.id | replace: '_', '-'
+  assign is_cart_empty = cart.empty?
+  assign heading_font_token = 'var(--font-heading--family)'
+  if block_settings.heading_font == 'body'
+    assign heading_font_token = 'var(--font-body--family)'
+  elsif block_settings.heading_font == 'subheading'
+    assign heading_font_token = 'var(--font-subheading--family)'
+  endif
+-%}
+
+<script
+  src="{{ 'exp-cart-checkout-form.js' | asset_url }}"
+  type="module"
+  defer
+></script>
+
+{% style %}
+  #exp-cart-form-{{ uid }} {
+    --exp-cf-primary: {{ block_settings.primary_color | default: 'var(--color-primary-button-background)' }};
+    --exp-cf-foreground: {{ block_settings.foreground_color | default: 'var(--color-primary-button-text)' }};
+    --exp-cf-border: {{ block_settings.border_color | default: 'var(--color-input-border)' }};
+    --exp-cf-input-bg: {{ block_settings.input_background | default: 'var(--color-input-background)' }};
+    --exp-cf-input-fg: {{ block_settings.input_foreground | default: 'var(--color-input-text)' }};
+    --exp-cf-input-radius: {{ block_settings.input_rounded }}px;
+    --exp-cf-button-radius: {{ block_settings.button_rounded }}px;
+    --exp-cf-heading-font: {{ heading_font_token }};
+    --exp-cf-heading-size: {{ block_settings.heading_font_size }}px;
+    --exp-cf-label-size: {{ block_settings.label_font_size }}px;
+    --exp-cf-input-size: {{ block_settings.input_font_size }}px;
+  }
+{% endstyle %}
+
+<div
+  id="exp-cart-form-{{ uid }}"
+  class="exp-cart-form spacing-style{% if is_cart_empty and request.design_mode == false %} exp-cart-form--hidden{% endif %}"
+  style="{% render 'spacing-style', settings: block_settings %}"
+  {{ block.shopify_attributes }}
+>
+  <exp-cart-checkout-form
+    class="exp-cart-form__component"
+    data-block-id="{{ uid }}"
+    data-section-id="{{ section.id }}"
+    data-active-step="1"
+    data-dropdown-open="{{ block_settings.open_dropdown_by_default }}"
+    data-require-checkout="{{ block_settings.require_before_checkout }}"
+    data-instant-enabled="{{ block_settings.enable_instant_delivery }}"
+    data-location-enabled="{{ block_settings.enable_current_location }}"
+    data-google-maps-key="{{ block_settings.google_maps_api_key | strip | escape }}"
+    data-api-base="{{ block_settings.region_api_base | default: 'https://www.emsifa.com/api-wilayah-indonesia/v2' | escape }}"
+    data-storefront-token="{{ block_settings.storefront_access_token | strip | escape }}"
+    data-storefront-api-version="{{ block_settings.storefront_api_version | default: '2025-10' | strip | escape }}"
+    data-cart-url="{{ routes.cart_url }}"
+    data-cart-update-url="{{ routes.cart_update_url }}"
+    data-design-mode="{{ request.design_mode }}"
+    data-express-label="{{ block_settings.express_label | escape }}"
+    data-instant-label="{{ block_settings.instant_label | escape }}"
+    data-trigger-heading="{{ block_settings.trigger_heading | escape }}"
+    data-trigger-empty-text="{{ block_settings.trigger_empty_text | escape }}"
+    data-add-label="{{ block_settings.add_address_button_label | escape }}"
+    data-change-label="{{ block_settings.change_button_label | escape }}"
+    data-checkout-locked-text="{{ block_settings.checkout_locked_notice | escape }}"
+    data-cart-note="{{ cart.note | escape }}"
+  >
+    {%- comment -%} Embedded Customer & Saved Addresses Context (JSON) {%- endcomment -%}
+    <script type="application/json" data-customer-context>
+      {
+        "isLoggedIn": {% if customer %}true{% else %}false{% endif %},
+        "customerId": {% if customer %}{{ customer.id | json }}{% else %}null{% endif %},
+        "email": {{ customer.email | default: '' | json }},
+        "firstName": {{ customer.first_name | default: '' | json }},
+        "lastName": {{ customer.last_name | default: '' | json }},
+        "phone": {{ customer.phone | default: customer.default_address.phone | default: '' | json }},
+        "accountAddressesUrl": {{ routes.account_addresses_url | default: '/account/addresses' | json }},
+        "accountLoginUrl": {{ routes.account_login_url | default: '/account/login' | json }},
+        "defaultAddressId": {% if customer and customer.default_address %}{{ customer.default_address.id | json }}{% else %}null{% endif %},
+        "addresses": [
+          {%- if customer -%}
+            {%- for addr in customer.addresses -%}
+              {
+                "shopifyId": {{ addr.id | json }},
+                "label": {{ addr.company | default: '' | json }},
+                "firstName": {{ addr.first_name | default: customer.first_name | default: '' | json }},
+                "lastName": {{ addr.last_name | default: customer.last_name | default: '' | json }},
+                "email": {{ customer.email | default: '' | json }},
+                "phone": {{ addr.phone | default: '' | json }},
+                "detailAddress": {{ addr.address1 | default: '' | json }},
+                "subdistrictLine": {{ addr.address2 | default: '' | json }},
+                "cityName": {{ addr.city | default: '' | json }},
+                "provinceName": {{ addr.province | default: '' | json }},
+                "provinceCode": {{ addr.province_code | default: '' | json }},
+                "postalCode": {{ addr.zip | default: '' | json }},
+                "country": {{ addr.country | default: 'Indonesia' | json }},
+                "countryCode": {{ addr.country_code | default: '' | json }},
+                "isDefault": {% if addr.id == customer.default_address.id %}true{% else %}false{% endif %}
+              }{% unless forloop.last %},{% endunless %}
+            {%- endfor -%}
+          {%- endif -%}
+        ]
+      }
+    </script>
+
+    {%- if is_cart_empty and request.design_mode -%}
+      <div class="exp-cart-form__editor-notice" role="note">
+        <svg
+          class="exp-cart-form__icon-sm"
+          viewBox="0 0 20 20"
+          fill="none"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="1.5" />
+          <path d="M10 9v4.5M10 6.5h.01" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" />
+        </svg>
+        <span>Theme Editor preview: this block automatically hides on the storefront when the cart is empty.</span>
+      </div>
+    {%- endif -%}
+
+    <div
+      class="visually-hidden"
+      data-live-status
+      role="status"
+      aria-live="polite"
+    ></div>
+
+    {%- comment -%} 1. Compact Dropdown Trigger Button {%- endcomment -%}
+    <button
+      type="button"
+      class="exp-cart-form__trigger"
+      data-action="toggle-dropdown"
+      aria-expanded="{% if block_settings.open_dropdown_by_default %}true{% else %}false{% endif %}"
+      aria-controls="exp-cf-dropdown-{{ uid }}"
+      data-skip-node-update
+    >
+      <span class="exp-cart-form__trigger-media" aria-hidden="true">
+        {%- if block_settings.trigger_icon_image != blank -%}
+          {{
+            block_settings.trigger_icon_image
+            | image_url: width: 72
+            | image_tag:
+              class: 'exp-cart-form__trigger-img',
+              width: 36,
+              height: 36,
+              loading: 'lazy',
+              alt: ''
+          }}
+        {%- else -%}
+          <svg viewBox="0 0 24 24" fill="none" focusable="false">
+            <path
+              d="M12 21s7-5.686 7-11a7 7 0 1 0-14 0c0 5.314 7 11 7 11Z"
+              stroke="currentColor"
+              stroke-width="1.75"
+              stroke-linejoin="round"
+            />
+            <circle cx="12" cy="10" r="2.5" stroke="currentColor" stroke-width="1.75" />
+          </svg>
+        {%- endif -%}
+      </span>
+
+      <span class="exp-cart-form__trigger-body">
+        <span class="exp-cart-form__trigger-top">
+          <span class="exp-cart-form__trigger-title" data-trigger-title>
+            {{ block_settings.trigger_heading | escape }}
+          </span>
+          <span class="exp-cart-form__trigger-badges" data-trigger-badges></span>
+        </span>
+        <span class="exp-cart-form__trigger-subtitle" data-trigger-subtitle>
+          {{ block_settings.trigger_empty_text | escape }}
+        </span>
+      </span>
+
+      <span class="exp-cart-form__trigger-end">
+        <span class="exp-cart-form__trigger-cta" data-trigger-cta>
+          {{ block_settings.add_address_button_label | escape }}
+        </span>
+        <span class="exp-cart-form__trigger-chevron" aria-hidden="true">
+          <svg viewBox="0 0 16 16" fill="none" focusable="false">
+            <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </span>
+      </span>
+    </button>
+
+    {%- comment -%} 2. Address Book Dropdown Panel {%- endcomment -%}
+    <div
+      id="exp-cf-dropdown-{{ uid }}"
+      class="exp-cart-form__dropdown"
+      data-dropdown-panel
+      {% unless block_settings.open_dropdown_by_default %}hidden{% endunless %}
+      data-skip-node-update
+    >
+      <div class="exp-cart-form__account-bar">
+        <span class="exp-cart-form__account-status" data-account-status>
+          {%- if customer -%}
+            Signed in as {{ customer.email | escape }}
+          {%- else -%}
+            Saved in this browser
+          {%- endif -%}
+        </span>
+        {%- if customer -%}
+          <a
+            class="exp-cart-form__account-link"
+            href="{{ routes.account_addresses_url }}"
+            target="_blank"
+            rel="noopener"
+          >
+            Shopify Account
+          </a>
+        {%- else -%}
+          <a
+            class="exp-cart-form__account-link"
+            href="{{ routes.account_login_url }}"
+          >
+            Sign in to sync
+          </a>
+        {%- endif -%}
+      </div>
+
+      <div
+        class="exp-cart-form__sync-banner"
+        data-sync-banner
+        role="status"
+        hidden
+      ></div>
+
+      {%- comment -%} Empty Address Book State {%- endcomment -%}
+      <div class="exp-cart-form__empty" data-empty-state>
+        <span class="exp-cart-form__empty-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" focusable="false">
+            <path
+              d="M12 21s7-5.686 7-11a7 7 0 1 0-14 0c0 5.314 7 11 7 11Z"
+              stroke="currentColor"
+              stroke-width="1.65"
+              stroke-linejoin="round"
+            />
+            <path d="M12 7.5v5M9.5 10h5" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" />
+          </svg>
+        </span>
+        <h2 class="exp-cart-form__empty-title">No saved addresses yet</h2>
+        <p class="exp-cart-form__empty-desc">
+          Add an address manually or detect your current location with Google Maps to pre-fill Checkout automatically.
+        </p>
+        <div class="exp-cart-form__empty-actions">
+          {%- if block_settings.enable_current_location -%}
+            <button
+              type="button"
+              class="exp-cart-form__btn exp-cart-form__btn--secondary"
+              data-action="create-from-location"
+            >
+              <svg class="exp-cart-form__btn-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true" focusable="false">
+                <circle cx="10" cy="10" r="3" stroke="currentColor" stroke-width="1.6" />
+                <circle cx="10" cy="10" r="6.5" stroke="currentColor" stroke-width="1.5" />
+                <path d="M10 1.5v2M10 16.5v2M1.5 10h2M16.5 10h2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+              </svg>
+              <span class="exp-cart-form__btn-label">Use Current Location</span>
+              <span class="exp-cart-form__spinner" aria-hidden="true"></span>
+            </button>
+          {%- endif -%}
+          <button
+            type="button"
+            class="exp-cart-form__btn exp-cart-form__btn--primary"
+            data-action="open-create"
+          >
+            <svg class="exp-cart-form__btn-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false">
+              <path d="M8 3.25v9.5M3.25 8h9.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+            </svg>
+            <span>{{ block_settings.add_address_button_label | escape }}</span>
+          </button>
+        </div>
+      </div>
+
+      {%- comment -%} Saved Address List {%- endcomment -%}
+      <div class="exp-cart-form__list-wrap" data-list-wrap hidden>
+        <div
+          class="exp-cart-form__address-list"
+          data-address-list
+          role="radiogroup"
+          aria-label="Saved shipping addresses"
+        ></div>
+
+        <div class="exp-cart-form__dropdown-footer">
+          {%- if block_settings.enable_current_location -%}
+            <button
+              type="button"
+              class="exp-cart-form__btn exp-cart-form__btn--secondary exp-cart-form__btn--full"
+              data-action="create-from-location"
+            >
+              <svg class="exp-cart-form__btn-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true" focusable="false">
+                <circle cx="10" cy="10" r="3" stroke="currentColor" stroke-width="1.6" />
+                <circle cx="10" cy="10" r="6.5" stroke="currentColor" stroke-width="1.5" />
+                <path d="M10 1.5v2M10 16.5v2M1.5 10h2M16.5 10h2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+              </svg>
+              <span class="exp-cart-form__btn-label">Use Current Location</span>
+              <span class="exp-cart-form__spinner" aria-hidden="true"></span>
+            </button>
+          {%- endif -%}
+
+          <button
+            type="button"
+            class="exp-cart-form__btn exp-cart-form__btn--secondary"
+            data-action="open-create"
+          >
+            <svg class="exp-cart-form__btn-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false">
+              <path d="M8 3.25v9.5M3.25 8h9.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+            </svg>
+            <span>{{ block_settings.add_address_button_label | escape }}</span>
+          </button>
+
+          <button
+            type="button"
+            class="exp-cart-form__btn exp-cart-form__btn--primary"
+            data-action="proceed-checkout"
+          >
+            <span class="exp-cart-form__btn-label">{{ block_settings.checkout_button_label | escape }}</span>
+            <span class="exp-cart-form__spinner" aria-hidden="true"></span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    {%- comment -%} 3. Native Modal Dialog for View / Create / Edit Address {%- endcomment -%}
+    <dialog
+      class="exp-cart-form__dialog"
+      data-modal-dialog
+      aria-labelledby="exp-cf-dialog-title-{{ uid }}"
+      data-skip-node-update
+    >
+      <div class="exp-cart-form__dialog-surface">
+        <div class="exp-cart-form__dialog-header">
+          <h2 id="exp-cf-dialog-title-{{ uid }}" class="exp-cart-form__dialog-title" data-modal-title tabindex="-1">
+            Add Shipping Address
+          </h2>
+          <button
+            type="button"
+            class="exp-cart-form__dialog-close"
+            data-action="close-modal"
+            aria-label="Close modal"
+          >
+            <svg viewBox="0 0 18 18" fill="none" aria-hidden="true" focusable="false">
+              <path d="M4.5 4.5l9 9M13.5 4.5l-9 9" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" />
+            </svg>
+          </button>
+        </div>
+
+        <div class="exp-cart-form__dialog-body">
+          <div
+            class="exp-cart-form__alert"
+            data-alert
+            role="alert"
+            hidden
+          ></div>
+
+          {%- comment -%} Mode A: View Address Detail + Google Maps Preview {%- endcomment -%}
+          <div class="exp-cart-form__view-panel" data-modal-view hidden>
+            <div class="exp-cart-form__view-badges" data-view-badges></div>
+
+            <div class="exp-cart-form__map-card" data-view-map-card hidden>
+              <div class="exp-cart-form__map-frame-wrap">
+                <iframe
+                  class="exp-cart-form__map-frame"
+                  data-view-map-iframe
+                  title="Google Maps location preview"
+                  loading="lazy"
+                  referrerpolicy="no-referrer-when-downgrade"
+                  allowfullscreen
+                ></iframe>
+              </div>
+              <div class="exp-cart-form__map-meta">
+                <span class="exp-cart-form__map-coords" data-view-map-coords>Google Maps preview</span>
+                <a
+                  class="exp-cart-form__map-link"
+                  data-view-map-link
+                  href="https://maps.google.com"
+                  target="_blank"
+                  rel="noopener"
+                >
+                  Open in Google Maps
+                </a>
+              </div>
+            </div>
+
+            <dl class="exp-cart-form__detail-list">
+              <div class="exp-cart-form__detail-row">
+                <dt>Delivery Method</dt>
+                <dd data-view-delivery></dd>
+              </div>
+              <div class="exp-cart-form__detail-row">
+                <dt>Country / Region</dt>
+                <dd data-view-country></dd>
+              </div>
+              <div class="exp-cart-form__detail-row">
+                <dt>Recipient</dt>
+                <dd data-view-recipient></dd>
+              </div>
+              <div class="exp-cart-form__detail-row">
+                <dt>Email</dt>
+                <dd data-view-email></dd>
+              </div>
+              <div class="exp-cart-form__detail-row">
+                <dt>Phone</dt>
+                <dd data-view-phone></dd>
+              </div>
+              <div class="exp-cart-form__detail-row">
+                <dt>Address</dt>
+                <dd data-view-address1></dd>
+              </div>
+              <div class="exp-cart-form__detail-row" data-view-subdistrict-row>
+                <dt>Apartment / Sub-district</dt>
+                <dd data-view-subdistrict></dd>
+              </div>
+              <div class="exp-cart-form__detail-row">
+                <dt>City &amp; Province / State</dt>
+                <dd data-view-region></dd>
+              </div>
+              <div class="exp-cart-form__detail-row">
+                <dt>Postal / ZIP Code</dt>
+                <dd data-view-postal></dd>
+              </div>
+              <div class="exp-cart-form__detail-row" data-view-note-row hidden>
+                <dt>Courier Note</dt>
+                <dd data-view-note></dd>
+              </div>
+            </dl>
+
+            <div class="exp-cart-form__actions exp-cart-form__actions--split">
+              <button
+                type="button"
+                class="exp-cart-form__btn exp-cart-form__btn--secondary"
+                data-action="edit-from-view"
+              >
+                <span>Edit Address</span>
+              </button>
+              <button
+                type="button"
+                class="exp-cart-form__btn exp-cart-form__btn--primary"
+                data-action="use-from-view"
+              >
+                <span>Use This Address</span>
+              </button>
+            </div>
+          </div>
+
+          {%- comment -%} Mode B: Create / Edit Form (Checkout-Aligned + Google Maps GPS) {%- endcomment -%}
+          <div class="exp-cart-form__form-panel" data-modal-form hidden>
+            {%- comment -%} Delivery Method Selector {%- endcomment -%}
+            <fieldset class="exp-cart-form__delivery">
+              <legend class="exp-cart-form__section-title">
+                {{ block_settings.delivery_heading | escape }}
+              </legend>
+
+              <div class="exp-cart-form__delivery-grid{% unless block_settings.enable_instant_delivery %} exp-cart-form__delivery-grid--single{% endunless %}">
+                <label
+                  class="exp-cart-form__delivery-option"
+                  for="exp-cf-delivery-express-{{ uid }}"
+                >
+                  <input
+                    id="exp-cf-delivery-express-{{ uid }}"
+                    class="exp-cart-form__delivery-radio"
+                    type="radio"
+                    name="exp_delivery_method_{{ uid }}"
+                    value="express"
+                    checked
+                    data-skip-node-update
+                    data-field="deliveryMethod"
+                  >
+                  <span class="exp-cart-form__delivery-card">
+                    <span class="exp-cart-form__delivery-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" fill="none" focusable="false">
+                        <path
+                          d="M3 7.5A1.5 1.5 0 0 1 4.5 6h9A1.5 1.5 0 0 1 15 7.5V16H4.5A1.5 1.5 0 0 1 3 14.5v-7Z"
+                          stroke="currentColor"
+                          stroke-width="1.75"
+                          stroke-linejoin="round"
+                        />
+                        <path
+                          d="M15 9.5h3.25a1.5 1.5 0 0 1 1.28.72l1.25 2.08c.14.24.22.51.22.79V15a1 1 0 0 1-1 1h-5V9.5Z"
+                          stroke="currentColor"
+                          stroke-width="1.75"
+                          stroke-linejoin="round"
+                        />
+                        <circle cx="7.25" cy="17.5" r="1.75" stroke="currentColor" stroke-width="1.75" />
+                        <circle cx="17.25" cy="17.5" r="1.75" stroke="currentColor" stroke-width="1.75" />
+                        <path d="M1.5 10h2.5M1.5 13h1.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" />
+                      </svg>
+                    </span>
+                    <span class="exp-cart-form__delivery-copy">
+                      <span class="exp-cart-form__delivery-name">{{ block_settings.express_label | escape }}</span>
+                      {%- if block_settings.express_description != blank -%}
+                        <span class="exp-cart-form__delivery-desc">{{ block_settings.express_description | escape }}</span>
+                      {%- endif -%}
+                    </span>
+                  </span>
+                </label>
+
+                {%- if block_settings.enable_instant_delivery -%}
+                  <label
+                    class="exp-cart-form__delivery-option"
+                    for="exp-cf-delivery-instant-{{ uid }}"
+                  >
+                    <input
+                      id="exp-cf-delivery-instant-{{ uid }}"
+                      class="exp-cart-form__delivery-radio"
+                      type="radio"
+                      name="exp_delivery_method_{{ uid }}"
+                      value="instant"
+                      data-skip-node-update
+                      data-field="deliveryMethod"
+                    >
+                    <span class="exp-cart-form__delivery-card">
+                      <span class="exp-cart-form__delivery-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" focusable="false">
+                          <path
+                            d="M13 3L5.5 13h5.5l-1 8L18.5 11H13l0-8Z"
+                            stroke="currentColor"
+                            stroke-width="1.75"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          />
+                        </svg>
+                      </span>
+                      <span class="exp-cart-form__delivery-copy">
+                        <span class="exp-cart-form__delivery-name">{{ block_settings.instant_label | escape }}</span>
+                        {%- if block_settings.instant_description != blank -%}
+                          <span class="exp-cart-form__delivery-desc">{{ block_settings.instant_description | escape }}</span>
+                        {%- endif -%}
+                      </span>
+                    </span>
+                  </label>
+                {%- endif -%}
+              </div>
+            </fieldset>
+
+            {%- comment -%} Step Progress Indicator {%- endcomment -%}
+            <nav class="exp-cart-form__stepper" aria-label="Address form steps">
+              <button
+                type="button"
+                class="exp-cart-form__step-btn exp-cart-form__step-btn--active"
+                data-step-trigger="1"
+                aria-current="step"
+              >
+                <span class="exp-cart-form__step-badge">
+                  <span class="exp-cart-form__step-num">1</span>
+                  <svg class="exp-cart-form__step-check" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false">
+                    <path d="M3.5 8.5L6.5 11.5L12.5 4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </span>
+                <span class="exp-cart-form__step-label">{{ block_settings.step1_label | escape }}</span>
+              </button>
+
+              <span class="exp-cart-form__step-line" aria-hidden="true">
+                <span class="exp-cart-form__step-line-fill"></span>
+              </span>
+
+              <button
+                type="button"
+                class="exp-cart-form__step-btn"
+                data-step-trigger="2"
+              >
+                <span class="exp-cart-form__step-badge">
+                  <span class="exp-cart-form__step-num">2</span>
+                  <svg class="exp-cart-form__step-check" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false">
+                    <path d="M3.5 8.5L6.5 11.5L12.5 4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </span>
+                <span class="exp-cart-form__step-label">{{ block_settings.step2_label | escape }}</span>
+              </button>
+            </nav>
+
+            {%- comment -%} Step 1: Recipient & Contact Information {%- endcomment -%}
+            <div class="exp-cart-form__panel" data-step-panel="1">
+              <h3 class="exp-cart-form__panel-heading">{{ block_settings.step1_heading | escape }}</h3>
+
+              <div class="exp-cart-form__grid">
+                <div class="exp-cart-form__field exp-cart-form__field--full">
+                  <label class="exp-cart-form__label" for="exp-cf-label-{{ uid }}">
+                    <span>Address Label (optional)</span>
+                  </label>
+                  <input
+                    id="exp-cf-label-{{ uid }}"
+                    class="exp-cart-form__input"
+                    type="text"
+                    name="label"
+                    placeholder="e.g. Home, Office, Apartment"
+                    data-field="label"
+                    data-skip-node-update
+                  >
+                </div>
+
+                <div class="exp-cart-form__field">
+                  <label class="exp-cart-form__label" for="exp-cf-first-name-{{ uid }}">
+                    <span>First name</span>
+                    <span class="exp-cart-form__required" aria-hidden="true">*</span>
+                  </label>
+                  <input
+                    id="exp-cf-first-name-{{ uid }}"
+                    class="exp-cart-form__input"
+                    type="text"
+                    name="firstName"
+                    placeholder="John"
+                    autocomplete="given-name"
+                    required
+                    aria-required="true"
+                    aria-describedby="exp-cf-first-name-err-{{ uid }}"
+                    data-field="firstName"
+                    data-skip-node-update
+                  >
+                  <p id="exp-cf-first-name-err-{{ uid }}" class="exp-cart-form__error" data-error-for="firstName" hidden></p>
+                </div>
+
+                <div class="exp-cart-form__field">
+                  <label class="exp-cart-form__label" for="exp-cf-last-name-{{ uid }}">
+                    <span>Last name</span>
+                    <span class="exp-cart-form__required" aria-hidden="true">*</span>
+                  </label>
+                  <input
+                    id="exp-cf-last-name-{{ uid }}"
+                    class="exp-cart-form__input"
+                    type="text"
+                    name="lastName"
+                    placeholder="Doe"
+                    autocomplete="family-name"
+                    required
+                    aria-required="true"
+                    aria-describedby="exp-cf-last-name-err-{{ uid }}"
+                    data-field="lastName"
+                    data-skip-node-update
+                  >
+                  <p id="exp-cf-last-name-err-{{ uid }}" class="exp-cart-form__error" data-error-for="lastName" hidden></p>
+                </div>
+
+                <div class="exp-cart-form__field">
+                  <label class="exp-cart-form__label" for="exp-cf-email-{{ uid }}">
+                    <span>Email</span>
+                    <span class="exp-cart-form__required" aria-hidden="true">*</span>
+                  </label>
+                  <input
+                    id="exp-cf-email-{{ uid }}"
+                    class="exp-cart-form__input"
+                    type="email"
+                    name="email"
+                    placeholder="e.g. johndoe@gmail.com"
+                    autocomplete="email"
+                    inputmode="email"
+                    autocorrect="off"
+                    autocapitalize="off"
+                    required
+                    aria-required="true"
+                    aria-describedby="exp-cf-email-err-{{ uid }}"
+                    data-field="email"
+                    data-skip-node-update
+                  >
+                  <p id="exp-cf-email-err-{{ uid }}" class="exp-cart-form__error" data-error-for="email" hidden></p>
+                </div>
+
+                <div class="exp-cart-form__field">
+                  <label class="exp-cart-form__label" for="exp-cf-phone-{{ uid }}">
+                    <span>Phone (optional)</span>
+                  </label>
+                  <div class="exp-cart-form__phone-group" data-phone-group>
+                    <span class="exp-cart-form__phone-prefix" data-phone-prefix aria-hidden="true">+62</span>
+                    <input
+                      id="exp-cf-phone-{{ uid }}"
+                      class="exp-cart-form__phone-input"
+                      type="tel"
+                      name="phone"
+                      placeholder="81234567890"
+                      autocomplete="tel-national"
+                      inputmode="tel"
+                      aria-describedby="exp-cf-phone-err-{{ uid }}"
+                      data-field="phone"
+                      data-skip-node-update
+                    >
+                    <span class="exp-cart-form__phone-flag" data-phone-flag aria-hidden="true" title="Indonesia (+62)">
+                      <svg viewBox="0 0 21 15" fill="none" focusable="false">
+                        <rect width="21" height="15" rx="2.5" fill="#FFFFFF" />
+                        <path d="M0 2.5A2.5 2.5 0 0 1 2.5 0h16A2.5 2.5 0 0 1 21 2.5V7.5H0V2.5Z" fill="#DC2626" />
+                        <rect x="0.5" y="0.5" width="20" height="14" rx="2" stroke="currentColor" stroke-opacity="0.14" />
+                      </svg>
+                    </span>
+                  </div>
+                  <p id="exp-cf-phone-err-{{ uid }}" class="exp-cart-form__error" data-error-for="phone" hidden></p>
+                </div>
+              </div>
+
+              <div class="exp-cart-form__actions exp-cart-form__actions--single">
+                <button
+                  type="button"
+                  class="exp-cart-form__btn exp-cart-form__btn--primary"
+                  data-action="next-step"
+                >
+                  <span>{{ block_settings.step1_button_label | escape }}</span>
+                </button>
+              </div>
+            </div>
+
+            {%- comment -%} Step 2: Address Fields (Shopify Checkout Aligned + Google Maps GPS) {%- endcomment -%}
+            <div class="exp-cart-form__panel" data-step-panel="2" hidden>
+              <div class="exp-cart-form__panel-header">
+                <h3 class="exp-cart-form__panel-heading">{{ block_settings.step2_heading | escape }}</h3>
+                <button
+                  type="button"
+                  class="exp-cart-form__retry-btn"
+                  data-action="retry-regions"
+                  hidden
+                >
+                  Reload regions
+                </button>
+              </div>
+
+              {%- if block_settings.enable_current_location -%}
+                <div class="exp-cart-form__location-bar">
+                  <button
+                    type="button"
+                    class="exp-cart-form__loc-btn exp-cart-form__loc-btn--primary"
+                    data-action="detect-location"
+                  >
+                    <svg class="exp-cart-form__btn-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true" focusable="false">
+                      <circle cx="10" cy="10" r="3" stroke="currentColor" stroke-width="1.6" />
+                      <circle cx="10" cy="10" r="6.5" stroke="currentColor" stroke-width="1.5" />
+                      <path d="M10 1.5v2M10 16.5v2M1.5 10h2M16.5 10h2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                    </svg>
+                    <span class="exp-cart-form__btn-label">Use Current Location</span>
+                    <span class="exp-cart-form__spinner" aria-hidden="true"></span>
+                  </button>
+
+                  <button
+                    type="button"
+                    class="exp-cart-form__loc-btn"
+                    data-action="preview-address-map"
+                  >
+                    <svg class="exp-cart-form__btn-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true" focusable="false">
+                      <path d="M10 17.5s5.5-4.5 5.5-8.75a5.5 5.5 0 1 0-11 0C4.5 13 10 17.5 10 17.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+                      <circle cx="10" cy="8.75" r="1.75" stroke="currentColor" stroke-width="1.5" />
+                    </svg>
+                    <span>Preview on Map</span>
+                  </button>
+                </div>
+
+                <div class="exp-cart-form__map-card" data-form-map-card hidden>
+                  <div class="exp-cart-form__map-frame-wrap">
+                    <iframe
+                      class="exp-cart-form__map-frame"
+                      data-form-map-iframe
+                      title="Selected shipping address on Google Maps"
+                      loading="lazy"
+                      referrerpolicy="no-referrer-when-downgrade"
+                      allowfullscreen
+                    ></iframe>
+                  </div>
+                  <div class="exp-cart-form__map-meta">
+                    <span class="exp-cart-form__map-coords" data-form-map-coords>Google Maps preview</span>
+                    <a
+                      class="exp-cart-form__map-link"
+                      data-form-map-link
+                      href="https://maps.google.com"
+                      target="_blank"
+                      rel="noopener"
+                    >
+                      Open in Google Maps
+                    </a>
+                  </div>
+                </div>
+              {%- endif -%}
+
+              <div class="exp-cart-form__grid">
+                <div class="exp-cart-form__field exp-cart-form__field--full">
+                  <label class="exp-cart-form__label" for="exp-cf-country-{{ uid }}">
+                    <span>Country/Region</span>
+                    <span class="exp-cart-form__required" aria-hidden="true">*</span>
+                  </label>
+                  <div class="exp-cart-form__select-wrap">
+                    <select
+                      id="exp-cf-country-{{ uid }}"
+                      class="exp-cart-form__select"
+                      name="countryCode"
+                      autocomplete="country"
+                      data-field="countryCode"
+                      data-skip-node-update
+                    >
+                      <option value="ID">Indonesia</option>
+                      <option value="SG">Singapore</option>
+                      <option value="MY">Malaysia</option>
+                      <option value="US">United States</option>
+                      <option value="AU">Australia</option>
+                      <option value="GB">United Kingdom</option>
+                    </select>
+                    <span class="exp-cart-form__select-chevron" aria-hidden="true">
+                      <svg viewBox="0 0 16 16" fill="none" focusable="false">
+                        <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="exp-cart-form__field exp-cart-form__field--full">
+                  <label class="exp-cart-form__label" for="exp-cf-detail-address-{{ uid }}">
+                    <span>Address</span>
+                    <span class="exp-cart-form__required" aria-hidden="true">*</span>
+                  </label>
+                  <input
+                    id="exp-cf-detail-address-{{ uid }}"
+                    class="exp-cart-form__input"
+                    type="text"
+                    name="detailAddress"
+                    placeholder="e.g. Jl. Merdeka No. 12, RT 01/RW 04"
+                    autocomplete="street-address"
+                    required
+                    aria-required="true"
+                    aria-describedby="exp-cf-detail-address-hint-{{ uid }} exp-cf-detail-address-err-{{ uid }}"
+                    data-field="detailAddress"
+                    data-skip-node-update
+                  >
+                  <p id="exp-cf-detail-address-hint-{{ uid }}" class="exp-cart-form__hint exp-cart-form__hint--inline">
+                    <svg class="exp-cart-form__hint-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false">
+                      <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.35" />
+                      <path d="M8 7.25v3.5M8 5.25h.01" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                    </svg>
+                    <span>Add a house number if you have one</span>
+                  </p>
+                  <p id="exp-cf-detail-address-err-{{ uid }}" class="exp-cart-form__error" data-error-for="detailAddress" hidden></p>
+                </div>
+
+                <div class="exp-cart-form__field exp-cart-form__field--full">
+                  <label class="exp-cart-form__label" for="exp-cf-apartment-{{ uid }}">
+                    <span>Apartment, suite, etc. (optional)</span>
+                  </label>
+                  <input
+                    id="exp-cf-apartment-{{ uid }}"
+                    class="exp-cart-form__input"
+                    type="text"
+                    name="apartment"
+                    placeholder="Apartment, suite, unit, or building"
+                    autocomplete="address-line2"
+                    data-field="apartment"
+                    data-skip-node-update
+                  >
+                </div>
+
+                {%- comment -%} Indonesia Cascading Region Fields (Emsifa API v2) {%- endcomment -%}
+                <div class="exp-cart-form__field" data-region-mode="ID">
+                  <label class="exp-cart-form__label" for="exp-cf-province-{{ uid }}">
+                    <span>Province</span>
+                    <span class="exp-cart-form__required" aria-hidden="true">*</span>
+                  </label>
+                  <div class="exp-cart-form__select-wrap">
+                    <select
+                      id="exp-cf-province-{{ uid }}"
+                      class="exp-cart-form__select"
+                      name="province"
+                      autocomplete="address-level1"
+                      aria-describedby="exp-cf-province-err-{{ uid }}"
+                      data-field="province"
+                      data-skip-node-update
+                    >
+                      <option value="">Select Province</option>
+                    </select>
+                    <span class="exp-cart-form__select-chevron" aria-hidden="true">
+                      <svg viewBox="0 0 16 16" fill="none" focusable="false">
+                        <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </span>
+                  </div>
+                  <p id="exp-cf-province-err-{{ uid }}" class="exp-cart-form__error" data-error-for="province" hidden></p>
+                </div>
+
+                <div class="exp-cart-form__field" data-region-mode="ID">
+                  <label class="exp-cart-form__label" for="exp-cf-city-{{ uid }}">
+                    <span>City</span>
+                    <span class="exp-cart-form__required" aria-hidden="true">*</span>
+                  </label>
+                  <div class="exp-cart-form__select-wrap">
+                    <select
+                      id="exp-cf-city-{{ uid }}"
+                      class="exp-cart-form__select"
+                      name="city"
+                      autocomplete="address-level2"
+                      disabled
+                      aria-describedby="exp-cf-city-err-{{ uid }}"
+                      data-field="city"
+                      data-skip-node-update
+                    >
+                      <option value="">Select City</option>
+                    </select>
+                    <span class="exp-cart-form__select-chevron" aria-hidden="true">
+                      <svg viewBox="0 0 16 16" fill="none" focusable="false">
+                        <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </span>
+                  </div>
+                  <p id="exp-cf-city-err-{{ uid }}" class="exp-cart-form__error" data-error-for="city" hidden></p>
+                </div>
+
+                <div class="exp-cart-form__field" data-region-mode="ID">
+                  <label class="exp-cart-form__label" for="exp-cf-district-{{ uid }}">
+                    <span>District (Kecamatan)</span>
+                    <span class="exp-cart-form__required" aria-hidden="true">*</span>
+                  </label>
+                  <div class="exp-cart-form__select-wrap">
+                    <select
+                      id="exp-cf-district-{{ uid }}"
+                      class="exp-cart-form__select"
+                      name="district"
+                      disabled
+                      aria-describedby="exp-cf-district-err-{{ uid }}"
+                      data-field="district"
+                      data-skip-node-update
+                    >
+                      <option value="">Select District</option>
+                    </select>
+                    <span class="exp-cart-form__select-chevron" aria-hidden="true">
+                      <svg viewBox="0 0 16 16" fill="none" focusable="false">
+                        <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </span>
+                  </div>
+                  <p id="exp-cf-district-err-{{ uid }}" class="exp-cart-form__error" data-error-for="district" hidden></p>
+                </div>
+
+                <div class="exp-cart-form__field" data-region-mode="ID">
+                  <label class="exp-cart-form__label" for="exp-cf-subdistrict-{{ uid }}">
+                    <span>Sub-district (Kelurahan)</span>
+                    <span class="exp-cart-form__required" aria-hidden="true">*</span>
+                  </label>
+                  <div class="exp-cart-form__select-wrap">
+                    <select
+                      id="exp-cf-subdistrict-{{ uid }}"
+                      class="exp-cart-form__select"
+                      name="subdistrict"
+                      disabled
+                      aria-describedby="exp-cf-subdistrict-err-{{ uid }}"
+                      data-field="subdistrict"
+                      data-skip-node-update
+                    >
+                      <option value="">Select Sub-district</option>
+                    </select>
+                    <span class="exp-cart-form__select-chevron" aria-hidden="true">
+                      <svg viewBox="0 0 16 16" fill="none" focusable="false">
+                        <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </span>
+                  </div>
+                  <p id="exp-cf-subdistrict-err-{{ uid }}" class="exp-cart-form__error" data-error-for="subdistrict" hidden></p>
+                </div>
+
+                {%- comment -%} International Manual Region Fields (shown when Country != Indonesia) {%- endcomment -%}
+                <div class="exp-cart-form__field" data-region-mode="INTL" hidden>
+                  <label class="exp-cart-form__label" for="exp-cf-intl-city-{{ uid }}">
+                    <span>City</span>
+                    <span class="exp-cart-form__required" aria-hidden="true">*</span>
+                  </label>
+                  <input
+                    id="exp-cf-intl-city-{{ uid }}"
+                    class="exp-cart-form__input"
+                    type="text"
+                    name="intlCity"
+                    placeholder="City"
+                    autocomplete="address-level2"
+                    aria-describedby="exp-cf-intl-city-err-{{ uid }}"
+                    data-field="intlCity"
+                    data-skip-node-update
+                  >
+                  <p id="exp-cf-intl-city-err-{{ uid }}" class="exp-cart-form__error" data-error-for="intlCity" hidden></p>
+                </div>
+
+                <div class="exp-cart-form__field" data-region-mode="INTL" hidden>
+                  <label class="exp-cart-form__label" for="exp-cf-intl-province-{{ uid }}">
+                    <span>State / Province</span>
+                    <span class="exp-cart-form__required" aria-hidden="true">*</span>
+                  </label>
+                  <input
+                    id="exp-cf-intl-province-{{ uid }}"
+                    class="exp-cart-form__input"
+                    type="text"
+                    name="intlProvince"
+                    placeholder="State or Province (e.g. Alaska or AK)"
+                    autocomplete="address-level1"
+                    aria-describedby="exp-cf-intl-province-err-{{ uid }}"
+                    data-field="intlProvince"
+                    data-skip-node-update
+                  >
+                  <p id="exp-cf-intl-province-err-{{ uid }}" class="exp-cart-form__error" data-error-for="intlProvince" hidden></p>
+                </div>
+
+                <div class="exp-cart-form__field exp-cart-form__field--full">
+                  <label class="exp-cart-form__label" for="exp-cf-postal-code-{{ uid }}">
+                    <span>Postal / ZIP code</span>
+                    <span class="exp-cart-form__required" aria-hidden="true">*</span>
+                  </label>
+                  <input
+                    id="exp-cf-postal-code-{{ uid }}"
+                    class="exp-cart-form__input exp-cart-form__input--tabular"
+                    type="text"
+                    name="postalCode"
+                    placeholder="Postal / ZIP code"
+                    autocomplete="postal-code"
+                    maxlength="12"
+                    required
+                    aria-required="true"
+                    aria-describedby="exp-cf-postal-code-hint-{{ uid }} exp-cf-postal-code-err-{{ uid }}"
+                    data-field="postalCode"
+                    data-skip-node-update
+                  >
+                  <p id="exp-cf-postal-code-hint-{{ uid }}" class="exp-cart-form__hint" data-postal-hint hidden>
+                    Auto-filled from selected location. You can edit if needed.
+                  </p>
+                  <p id="exp-cf-postal-code-err-{{ uid }}" class="exp-cart-form__error" data-error-for="postalCode" hidden></p>
+                </div>
+
+                <div class="exp-cart-form__field exp-cart-form__field--full">
+                  <label class="exp-cart-form__label" for="exp-cf-note-couriers-{{ uid }}">
+                    <span>Note Couriers (optional)</span>
+                  </label>
+                  <input
+                    id="exp-cf-note-couriers-{{ uid }}"
+                    class="exp-cart-form__input"
+                    type="text"
+                    name="noteCouriers"
+                    placeholder="e.g. Please leave the package at the front door"
+                    data-field="noteCouriers"
+                    data-skip-node-update
+                  >
+                </div>
+
+                <div class="exp-cart-form__field exp-cart-form__field--full">
+                  <label class="exp-cart-form__checkbox-row" for="exp-cf-default-{{ uid }}">
+                    <input
+                      id="exp-cf-default-{{ uid }}"
+                      class="exp-cart-form__checkbox"
+                      type="checkbox"
+                      name="isDefault"
+                      data-field="isDefault"
+                      data-skip-node-update
+                    >
+                    <span>Set as default shipping address</span>
+                  </label>
+                </div>
+              </div>
+
+              <div class="exp-cart-form__actions exp-cart-form__actions--split">
+                <button
+                  type="button"
+                  class="exp-cart-form__btn exp-cart-form__btn--secondary"
+                  data-action="prev-step"
+                >
+                  <span>{{ block_settings.back_button_label | escape }}</span>
+                </button>
+
+                <button
+                  type="button"
+                  class="exp-cart-form__btn exp-cart-form__btn--primary"
+                  data-action="save-address"
+                  data-default-label="{{ block_settings.complete_button_label | escape }}"
+                >
+                  <span class="exp-cart-form__btn-label" data-save-btn-label>{{ block_settings.complete_button_label | escape }}</span>
+                  <span class="exp-cart-form__spinner" aria-hidden="true"></span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </dialog>
+  </exp-cart-checkout-form>
+</div>
+
+{% stylesheet %}
+  .exp-cart-form {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    overflow-x: clip;
+    container-type: inline-size;
+    container-name: exp-cart-form;
+    color: var(--exp-cf-input-fg);
+    font-family: var(--font-body--family);
+    --exp-cf-border-subtle: color-mix(in srgb, var(--exp-cf-border) 22%, transparent);
+    --exp-cf-border-hover: color-mix(in srgb, var(--exp-cf-border) 48%, transparent);
+    --exp-cf-surface-muted: color-mix(in srgb, var(--exp-cf-input-fg) 5%, var(--exp-cf-input-bg));
+    --exp-cf-text-muted: color-mix(in srgb, var(--exp-cf-input-fg) 72%, var(--exp-cf-input-bg));
+    --exp-cf-primary-soft: color-mix(in srgb, var(--exp-cf-primary) 14%, var(--exp-cf-input-bg));
+    --exp-cf-focus-ring: color-mix(in srgb, var(--exp-cf-primary) 75%, var(--exp-cf-foreground));
+  }
+
+  .exp-cart-form--hidden {
+    display: none;
+  }
+
+  .exp-cart-form__component {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap-sm);
+    width: 100%;
+    min-width: 0;
+  }
+
+  .exp-cart-form__component ::selection {
+    background-color: var(--exp-cf-primary);
+    color: var(--exp-cf-foreground);
+  }
+
+  .exp-cart-form__editor-notice {
+    display: flex;
+    align-items: center;
+    gap: var(--gap-xs);
+    padding: var(--padding-xs) var(--padding-sm);
+    border: 1px dashed var(--exp-cf-border-hover);
+    border-radius: var(--exp-cf-input-radius);
+    background-color: var(--exp-cf-surface-muted);
+    color: var(--exp-cf-text-muted);
+    font-size: var(--font-size--xs);
+    line-height: var(--line-height--body-normal);
+  }
+
+  .exp-cart-form__icon-sm {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+  }
+
+  /* 1. Compact Dropdown Trigger */
+  .exp-cart-form__trigger {
+    display: flex;
+    align-items: center;
+    gap: var(--gap-sm);
+    width: 100%;
+    min-width: 0;
+    min-height: 60px;
+    padding: 12px 14px;
+    border: 1.5px solid var(--exp-cf-border-subtle);
+    border-radius: var(--exp-cf-input-radius);
+    background-color: var(--exp-cf-input-bg);
+    color: var(--exp-cf-input-fg);
+    font-family: inherit;
+    text-align: start;
+    cursor: pointer;
+    transition: border-color 150ms var(--ease-out-cubic), background-color 150ms var(--ease-out-cubic);
+  }
+
+  .exp-cart-form__trigger:hover {
+    border-color: var(--exp-cf-border-hover);
+  }
+
+  .exp-cart-form__trigger:focus-visible {
+    outline: 2px solid var(--exp-cf-focus-ring);
+    outline-offset: 2px;
+  }
+
+  .exp-cart-form__trigger[aria-expanded='true'] {
+    border-color: var(--exp-cf-primary);
+    background-color: var(--exp-cf-primary-soft);
+  }
+
+  .exp-cart-form__trigger-media {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    border-radius: calc(var(--exp-cf-input-radius) * 0.65);
+    background-color: var(--exp-cf-primary-soft);
+    color: var(--exp-cf-foreground);
+    flex-shrink: 0;
+    overflow: hidden;
+  }
+
+  .exp-cart-form__trigger-media svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .exp-cart-form__trigger-img {
+    width: 36px;
+    height: 36px;
+    object-fit: cover;
+    display: block;
+  }
+
+  .exp-cart-form__trigger-body {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .exp-cart-form__trigger-top {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .exp-cart-form__trigger-title {
+    font-family: var(--exp-cf-heading-font);
+    font-size: var(--exp-cf-input-size);
+    font-weight: 700;
+    line-height: 1.25;
+    color: var(--exp-cf-input-fg);
+    overflow-wrap: break-word;
+  }
+
+  .exp-cart-form__trigger-badges {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .exp-cart-form__trigger-badges:empty {
+    display: none;
+  }
+
+  .exp-cart-form__trigger-subtitle {
+    font-size: var(--font-size--xs);
+    line-height: 1.4;
+    color: var(--exp-cf-text-muted);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: break-word;
+  }
+
+  .exp-cart-form__trigger-end {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    margin-inline-start: auto;
+  }
+
+  .exp-cart-form__trigger-cta {
+    padding: 4px 10px;
+    border-radius: var(--exp-cf-button-radius);
+    background-color: var(--exp-cf-primary);
+    color: var(--exp-cf-foreground);
+    font-size: var(--font-size--2xs);
+    font-weight: 700;
+    line-height: 1.3;
+    white-space: nowrap;
+  }
+
+  .exp-cart-form__trigger-chevron {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    color: var(--exp-cf-text-muted);
+    transition: transform 180ms var(--ease-out-cubic);
+  }
+
+  .exp-cart-form__trigger-chevron svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .exp-cart-form__trigger[aria-expanded='true'] .exp-cart-form__trigger-chevron {
+    transform: rotate(180deg);
+  }
+
+  @container exp-cart-form (max-width: 390px) {
+    .exp-cart-form__trigger-cta {
+      display: none;
+    }
+  }
+
+  /* Badges */
+  .exp-cart-form__badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.35;
+    background-color: var(--exp-cf-surface-muted);
+    color: var(--exp-cf-input-fg);
+    border: 1px solid var(--exp-cf-border-subtle);
+  }
+
+  .exp-cart-form__badge--primary {
+    background-color: var(--exp-cf-primary);
+    color: var(--exp-cf-foreground);
+    border-color: transparent;
+  }
+
+  /* 2. Address Book Dropdown Panel */
+  .exp-cart-form__dropdown {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap-sm);
+    padding: var(--padding-md);
+    border: 1.5px solid var(--exp-cf-border-subtle);
+    border-radius: var(--exp-cf-input-radius);
+    background-color: var(--exp-cf-input-bg);
+    min-width: 0;
+  }
+
+  .exp-cart-form__dropdown[hidden] {
+    display: none;
+  }
+
+  .exp-cart-form__account-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px 12px;
+    padding-block-end: var(--padding-xs);
+    border-block-end: 1px solid var(--exp-cf-border-subtle);
+    font-size: var(--font-size--2xs);
+  }
+
+  .exp-cart-form__account-status {
+    color: var(--exp-cf-text-muted);
+    overflow-wrap: anywhere;
+  }
+
+  .exp-cart-form__account-link {
+    color: var(--exp-cf-input-fg);
+    font-weight: 600;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  .exp-cart-form__account-link:focus-visible {
+    outline: 2px solid var(--exp-cf-focus-ring);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  .exp-cart-form__sync-banner {
+    padding: 8px 12px;
+    border-radius: calc(var(--exp-cf-input-radius) * 0.65);
+    border: 1px solid var(--exp-cf-border-subtle);
+    background-color: var(--exp-cf-surface-muted);
+    color: var(--exp-cf-input-fg);
+    font-size: var(--font-size--2xs);
+    line-height: 1.45;
+  }
+
+  .exp-cart-form__sync-banner[hidden] {
+    display: none;
+  }
+
+  /* Empty State */
+  .exp-cart-form__empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 8px;
+    padding: var(--padding-md) var(--padding-xs);
+  }
+
+  .exp-cart-form__empty[hidden] {
+    display: none;
+  }
+
+  .exp-cart-form__empty-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background-color: var(--exp-cf-primary-soft);
+    color: var(--exp-cf-foreground);
+  }
+
+  .exp-cart-form__empty-icon svg {
+    width: 22px;
+    height: 22px;
+  }
+
+  .exp-cart-form__empty-title {
+    margin: 4px 0 0;
+    font-family: var(--exp-cf-heading-font);
+    font-size: var(--exp-cf-heading-size);
+    font-weight: 700;
+    line-height: 1.3;
+    color: var(--exp-cf-input-fg);
+  }
+
+  .exp-cart-form__empty-desc {
+    margin: 0 0 8px;
+    max-width: 42ch;
+    font-size: var(--font-size--xs);
+    line-height: 1.45;
+    color: var(--exp-cf-text-muted);
+  }
+
+  .exp-cart-form__empty-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--gap-xs);
+    width: 100%;
+  }
+
+  /* Address List */
+  .exp-cart-form__list-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap-sm);
+    min-width: 0;
+  }
+
+  .exp-cart-form__list-wrap[hidden] {
+    display: none;
+  }
+
+  .exp-cart-form__address-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap-xs);
+    min-width: 0;
+  }
+
+  .exp-cart-form__address-item {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+    border: 1.5px solid var(--exp-cf-border-subtle);
+    border-radius: calc(var(--exp-cf-input-radius) * 0.85);
+    background-color: var(--exp-cf-input-bg);
+    transition: border-color 150ms var(--ease-out-cubic), background-color 150ms var(--ease-out-cubic);
+    min-width: 0;
+  }
+
+  .exp-cart-form__address-item:hover {
+    border-color: var(--exp-cf-border-hover);
+  }
+
+  .exp-cart-form__address-item--selected {
+    border-color: var(--exp-cf-primary);
+    background-color: var(--exp-cf-primary-soft);
+  }
+
+  .exp-cart-form__address-select-btn {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    width: 100%;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font-family: inherit;
+    text-align: start;
+    cursor: pointer;
+  }
+
+  .exp-cart-form__address-select-btn:focus-visible {
+    outline: 2px solid var(--exp-cf-focus-ring);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  .exp-cart-form__radio-dot {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    margin-block-start: 2px;
+    border-radius: 50%;
+    border: 2px solid var(--exp-cf-border-hover);
+    background-color: var(--exp-cf-input-bg);
+    flex-shrink: 0;
+  }
+
+  .exp-cart-form__address-item--selected .exp-cart-form__radio-dot {
+    border-color: var(--exp-cf-foreground);
+    background-color: var(--exp-cf-primary);
+  }
+
+  .exp-cart-form__address-item--selected .exp-cart-form__radio-dot::after {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background-color: var(--exp-cf-foreground);
+  }
+
+  .exp-cart-form__address-content {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .exp-cart-form__address-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .exp-cart-form__address-name {
+    font-size: var(--exp-cf-input-size);
+    font-weight: 700;
+    line-height: 1.3;
+    color: var(--exp-cf-input-fg);
+    overflow-wrap: break-word;
+  }
+
+  .exp-cart-form__address-meta,
+  .exp-cart-form__address-lines {
+    margin: 0;
+    font-size: var(--font-size--xs);
+    line-height: 1.4;
+    color: var(--exp-cf-text-muted);
+    overflow-wrap: break-word;
+  }
+
+  /* Per-item CRUD Action Bar */
+  .exp-cart-form__item-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding-block-start: 8px;
+    border-block-start: 1px solid var(--exp-cf-border-subtle);
+  }
+
+  .exp-cart-form__crud-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    min-height: 36px;
+    padding: 6px 10px;
+    border: 1px solid var(--exp-cf-border-subtle);
+    border-radius: calc(var(--exp-cf-button-radius) * 0.65);
+    background-color: var(--exp-cf-input-bg);
+    color: var(--exp-cf-input-fg);
+    font-family: inherit;
+    font-size: var(--font-size--2xs);
+    font-weight: 600;
+    cursor: pointer;
+    transition: border-color 150ms var(--ease-out-cubic), background-color 150ms var(--ease-out-cubic), color 150ms var(--ease-out-cubic);
+  }
+
+  .exp-cart-form__crud-btn svg {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+  }
+
+  .exp-cart-form__crud-btn:hover {
+    border-color: var(--exp-cf-border-hover);
+    background-color: var(--exp-cf-surface-muted);
+  }
+
+  .exp-cart-form__crud-btn:focus-visible {
+    outline: 2px solid var(--exp-cf-focus-ring);
+    outline-offset: 2px;
+  }
+
+  .exp-cart-form__crud-btn--danger {
+    color: var(--color-error);
+    border-color: color-mix(in srgb, var(--color-error) 30%, transparent);
+  }
+
+  .exp-cart-form__crud-btn--danger:hover {
+    background-color: color-mix(in srgb, var(--color-error) 10%, var(--exp-cf-input-bg));
+    border-color: var(--color-error);
+  }
+
+  .exp-cart-form__crud-btn--danger-solid {
+    background-color: var(--color-error);
+    border-color: var(--color-error);
+    color: var(--color-white);
+  }
+
+  .exp-cart-form__crud-btn--danger-solid:hover {
+    opacity: 0.9;
+    background-color: var(--color-error);
+  }
+
+  .exp-cart-form__delete-confirm-text {
+    font-size: var(--font-size--2xs);
+    font-weight: 600;
+    color: var(--color-error);
+    margin-inline-end: auto;
+  }
+
+  .exp-cart-form__dropdown-footer {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--gap-xs);
+    padding-block-start: 4px;
+  }
+
+  @container exp-cart-form (min-width: 480px) {
+    .exp-cart-form__dropdown-footer {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .exp-cart-form__btn--full {
+      grid-column: 1 / -1;
+    }
+  }
+
+  /* 3. Native Dialog Modal */
+  .exp-cart-form__dialog {
+    width: min(650px, calc(100vw - 24px));
+    max-width: 100%;
+    max-height: min(92dvh, 880px);
+    margin: auto;
+    padding: 0;
+    border: 1.5px solid var(--exp-cf-border-subtle);
+    border-radius: var(--exp-cf-input-radius);
+    background-color: var(--exp-cf-input-bg);
+    color: var(--exp-cf-input-fg);
+    overflow: hidden;
+    box-shadow: 0 20px 44px rgb(var(--color-foreground-rgb) / var(--opacity-20));
+  }
+
+  .exp-cart-form__dialog::backdrop {
+    background-color: rgb(var(--color-foreground-rgb) / var(--opacity-50));
+  }
+
+  .exp-cart-form__dialog:not([open]) {
+    display: none;
+  }
+
+  .exp-cart-form__dialog-surface {
+    display: flex;
+    flex-direction: column;
+    max-height: min(92dvh, 880px);
+    min-width: 0;
+  }
+
+  .exp-cart-form__dialog-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--gap-sm);
+    padding: 16px 20px;
+    border-block-end: 1px solid var(--exp-cf-border-subtle);
+  }
+
+  .exp-cart-form__dialog-title {
+    margin: 0;
+    font-family: var(--exp-cf-heading-font);
+    font-size: calc(var(--exp-cf-heading-size) + 2px);
+    font-weight: 700;
+    line-height: 1.25;
+    color: var(--exp-cf-input-fg);
+    outline: none;
+  }
+
+  .exp-cart-form__dialog-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--minimum-touch-target);
+    height: var(--minimum-touch-target);
+    margin: -8px -8px -8px 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--exp-cf-text-muted);
+    cursor: pointer;
+    transition: background-color 150ms var(--ease-out-cubic), color 150ms var(--ease-out-cubic);
+  }
+
+  .exp-cart-form__dialog-close svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .exp-cart-form__dialog-close:hover {
+    background-color: var(--exp-cf-surface-muted);
+    color: var(--exp-cf-input-fg);
+  }
+
+  .exp-cart-form__dialog-close:focus-visible {
+    outline: 2px solid var(--exp-cf-focus-ring);
+    outline-offset: 2px;
+  }
+
+  .exp-cart-form__dialog-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap-md);
+    padding: 20px;
+    overflow-y: auto;
+    min-width: 0;
+  }
+
+  /* Google Maps Location Controls & Preview Card */
+  .exp-cart-form__location-bar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--gap-xs);
+    margin-block-end: var(--margin-sm);
+  }
+
+  @media screen and (min-width: 480px) {
+    .exp-cart-form__location-bar {
+      grid-template-columns: minmax(0, 1fr) auto;
+    }
+  }
+
+  .exp-cart-form__loc-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: var(--minimum-touch-target);
+    padding: 8px 14px;
+    border: 1.5px solid var(--exp-cf-border-subtle);
+    border-radius: var(--exp-cf-button-radius);
+    background-color: var(--exp-cf-input-bg);
+    color: var(--exp-cf-input-fg);
+    font-family: inherit;
+    font-size: var(--font-size--xs);
+    font-weight: 600;
+    cursor: pointer;
+    transition: border-color 150ms var(--ease-out-cubic), background-color 150ms var(--ease-out-cubic);
+  }
+
+  .exp-cart-form__loc-btn--primary {
+    border-color: var(--exp-cf-primary);
+    background-color: var(--exp-cf-primary-soft);
+    color: var(--exp-cf-foreground);
+  }
+
+  .exp-cart-form__loc-btn:hover:not(:disabled) {
+    border-color: var(--exp-cf-border-hover);
+  }
+
+  .exp-cart-form__loc-btn:focus-visible {
+    outline: 2px solid var(--exp-cf-focus-ring);
+    outline-offset: 2px;
+  }
+
+  .exp-cart-form__loc-btn:disabled {
+    opacity: 0.65;
+    cursor: not-allowed;
+  }
+
+  .exp-cart-form__map-card {
+    display: flex;
+    flex-direction: column;
+    margin-block-end: var(--margin-md);
+    border: 1.5px solid var(--exp-cf-border-subtle);
+    border-radius: var(--exp-cf-input-radius);
+    overflow: hidden;
+    background-color: var(--exp-cf-surface-muted);
+  }
+
+  .exp-cart-form__map-card[hidden] {
+    display: none;
+  }
+
+  .exp-cart-form__map-frame-wrap {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    max-height: 176px;
+    background-color: var(--exp-cf-surface-muted);
+  }
+
+  .exp-cart-form__map-frame {
+    width: 100%;
+    height: 100%;
+    border: 0;
+    display: block;
+  }
+
+  .exp-cart-form__map-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 12px;
+    background-color: var(--exp-cf-input-bg);
+    border-block-start: 1px solid var(--exp-cf-border-subtle);
+    font-size: var(--font-size--2xs);
+  }
+
+  .exp-cart-form__map-coords {
+    color: var(--exp-cf-text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .exp-cart-form__map-link {
+    color: var(--exp-cf-input-fg);
+    font-weight: 600;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  .exp-cart-form__map-link:focus-visible {
+    outline: 2px solid var(--exp-cf-focus-ring);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  /* View Mode Detail List */
+  .exp-cart-form__view-panel[hidden],
+  .exp-cart-form__form-panel[hidden] {
+    display: none;
+  }
+
+  .exp-cart-form__view-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-block-end: var(--margin-sm);
+  }
+
+  .exp-cart-form__view-badges:empty {
+    display: none;
+  }
+
+  .exp-cart-form__detail-list {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+  }
+
+  .exp-cart-form__detail-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+    padding-block-end: 6px;
+    border-block-end: 1px solid var(--exp-cf-border-subtle);
+  }
+
+  .exp-cart-form__detail-row[hidden] {
+    display: none;
+  }
+
+  @media screen and (min-width: 520px) {
+    .exp-cart-form__detail-row {
+      grid-template-columns: 165px minmax(0, 1fr);
+      gap: var(--gap-md);
+    }
+  }
+
+  .exp-cart-form__detail-row dt {
+    margin: 0;
+    font-size: var(--font-size--xs);
+    font-weight: 600;
+    color: var(--exp-cf-text-muted);
+  }
+
+  .exp-cart-form__detail-row dd {
+    margin: 0;
+    font-size: var(--exp-cf-input-size);
+    line-height: 1.45;
+    color: var(--exp-cf-input-fg);
+    overflow-wrap: break-word;
+  }
+
+  /* Form Mode Inner Layout */
+  .exp-cart-form__form-panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap-md);
+  }
+
+  .exp-cart-form__delivery {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    min-width: 0;
+  }
+
+  .exp-cart-form__section-title {
+    margin: 0 0 var(--margin-sm);
+    padding: 0;
+    font-family: var(--exp-cf-heading-font);
+    font-size: var(--exp-cf-heading-size);
+    font-weight: 700;
+    line-height: var(--line-height--heading-normal);
+    color: var(--exp-cf-input-fg);
+  }
+
+  .exp-cart-form__delivery-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--gap-sm);
+  }
+
+  @media screen and (min-width: 520px) {
+    .exp-cart-form__delivery-grid:not(.exp-cart-form__delivery-grid--single) {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  .exp-cart-form__delivery-option {
+    position: relative;
+    display: block;
+    min-width: 0;
+    cursor: pointer;
+  }
+
+  .exp-cart-form__delivery-radio {
+    position: absolute;
+    opacity: 0;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    pointer-events: none;
+  }
+
+  .exp-cart-form__delivery-card {
+    display: flex;
+    align-items: center;
+    gap: var(--gap-sm);
+    min-height: 56px;
+    padding: 10px 12px;
+    border: 1.5px solid var(--exp-cf-border-subtle);
+    border-radius: var(--exp-cf-input-radius);
+    background-color: var(--exp-cf-input-bg);
+    color: var(--exp-cf-input-fg);
+    transition: border-color 150ms var(--ease-out-cubic), background-color 150ms var(--ease-out-cubic);
+  }
+
+  .exp-cart-form__delivery-option:hover .exp-cart-form__delivery-card {
+    border-color: var(--exp-cf-border-hover);
+  }
+
+  .exp-cart-form__delivery-radio:checked + .exp-cart-form__delivery-card {
+    border-color: var(--exp-cf-primary);
+    background-color: var(--exp-cf-primary-soft);
+  }
+
+  .exp-cart-form__delivery-radio:focus-visible + .exp-cart-form__delivery-card {
+    outline: 2px solid var(--exp-cf-focus-ring);
+    outline-offset: 2px;
+  }
+
+  .exp-cart-form__delivery-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    flex-shrink: 0;
+    color: var(--exp-cf-text-muted);
+  }
+
+  .exp-cart-form__delivery-icon svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .exp-cart-form__delivery-radio:checked + .exp-cart-form__delivery-card .exp-cart-form__delivery-icon {
+    color: var(--exp-cf-foreground);
+  }
+
+  .exp-cart-form__delivery-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .exp-cart-form__delivery-name {
+    font-size: var(--exp-cf-input-size);
+    font-weight: 600;
+    line-height: 1.25;
+    color: var(--exp-cf-input-fg);
+  }
+
+  .exp-cart-form__delivery-desc {
+    font-size: var(--font-size--2xs);
+    line-height: 1.35;
+    color: var(--exp-cf-text-muted);
+  }
+
+  /* Stepper */
+  .exp-cart-form__stepper {
+    display: flex;
+    align-items: center;
+    gap: var(--gap-sm);
+    width: 100%;
+    min-width: 0;
+  }
+
+  .exp-cart-form__step-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--gap-xs);
+    min-height: var(--minimum-touch-target);
+    padding: 4px 2px;
+    border: 0;
+    background: transparent;
+    color: var(--exp-cf-text-muted);
+    font-family: inherit;
+    font-size: var(--exp-cf-label-size);
+    font-weight: 500;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .exp-cart-form__step-btn:focus-visible {
+    outline: 2px solid var(--exp-cf-focus-ring);
+    outline-offset: 2px;
+    border-radius: var(--style-border-radius-xs);
+  }
+
+  .exp-cart-form__step-btn--active,
+  .exp-cart-form__step-btn--done {
+    color: var(--exp-cf-input-fg);
+    font-weight: 600;
+  }
+
+  .exp-cart-form__step-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    border: 1.5px solid var(--exp-cf-border-subtle);
+    background-color: var(--exp-cf-input-bg);
+    color: var(--exp-cf-text-muted);
+    font-size: var(--font-size--2xs);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+  }
+
+  .exp-cart-form__step-check {
+    display: none;
+    width: 13px;
+    height: 13px;
+  }
+
+  .exp-cart-form__step-btn--active .exp-cart-form__step-badge,
+  .exp-cart-form__step-btn--done .exp-cart-form__step-badge {
+    border-color: var(--exp-cf-primary);
+    background-color: var(--exp-cf-primary);
+    color: var(--exp-cf-foreground);
+  }
+
+  .exp-cart-form__step-btn--done .exp-cart-form__step-num {
+    display: none;
+  }
+
+  .exp-cart-form__step-btn--done .exp-cart-form__step-check {
+    display: block;
+  }
+
+  .exp-cart-form__step-line {
+    position: relative;
+    flex: 1 1 auto;
+    height: 2px;
+    min-width: 16px;
+    border-radius: 999px;
+    background-color: var(--exp-cf-border-subtle);
+    overflow: hidden;
+  }
+
+  .exp-cart-form__step-line-fill {
+    display: block;
+    width: 100%;
+    height: 100%;
+    background-color: var(--exp-cf-primary);
+    transform: scaleX(0);
+    transform-origin: left center;
+    transition: transform 240ms var(--ease-out-cubic);
+  }
+
+  .exp-cart-form__component[data-active-step='2'] .exp-cart-form__step-line-fill {
+    transform: scaleX(1);
+  }
+
+  /* Alert Banner */
+  .exp-cart-form__alert {
+    padding: 10px 14px;
+    border: 1px solid color-mix(in srgb, var(--color-error) 35%, transparent);
+    border-radius: calc(var(--exp-cf-input-radius) * 0.75);
+    background-color: color-mix(in srgb, var(--color-error) 8%, var(--exp-cf-input-bg));
+    color: var(--color-error);
+    font-size: var(--font-size--xs);
+    line-height: var(--line-height--body-normal);
+  }
+
+  .exp-cart-form__alert[hidden] {
+    display: none;
+  }
+
+  /* Step Panels & Form Grid */
+  .exp-cart-form__panel[hidden] {
+    display: none;
+  }
+
+  .exp-cart-form__panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--gap-sm);
+    margin-block-end: var(--margin-sm);
+  }
+
+  .exp-cart-form__panel-header .exp-cart-form__panel-heading {
+    margin-block-end: 0;
+  }
+
+  .exp-cart-form__panel-heading {
+    margin: 0 0 var(--margin-sm);
+    font-family: var(--exp-cf-heading-font);
+    font-size: var(--exp-cf-heading-size);
+    font-weight: 700;
+    line-height: var(--line-height--heading-normal);
+    color: var(--exp-cf-input-fg);
+  }
+
+  .exp-cart-form__retry-btn {
+    min-height: 36px;
+    padding: 6px 12px;
+    border: 1px solid var(--exp-cf-border-hover);
+    border-radius: var(--exp-cf-button-radius);
+    background-color: var(--exp-cf-input-bg);
+    color: var(--exp-cf-input-fg);
+    font-family: inherit;
+    font-size: var(--font-size--xs);
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .exp-cart-form__retry-btn[hidden] {
+    display: none;
+  }
+
+  .exp-cart-form__grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--gap-md);
+  }
+
+  @media screen and (min-width: 520px) {
+    .exp-cart-form__grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  .exp-cart-form__field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .exp-cart-form__field[hidden] {
+    display: none;
+  }
+
+  .exp-cart-form__field--full {
+    grid-column: 1 / -1;
+  }
+
+  .exp-cart-form__label {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 3px;
+    font-size: var(--exp-cf-label-size);
+    font-weight: 600;
+    line-height: 1.35;
+    color: var(--exp-cf-input-fg);
+  }
+
+  .exp-cart-form__required {
+    color: var(--color-error);
+    font-weight: 700;
+  }
+
+  .exp-cart-form__input,
+  .exp-cart-form__select,
+  .exp-cart-form__textarea {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    border: 1px solid var(--exp-cf-border-subtle);
+    border-radius: var(--exp-cf-input-radius);
+    background-color: var(--exp-cf-input-bg);
+    color: var(--exp-cf-input-fg);
+    caret-color: var(--exp-cf-input-fg);
+    font-family: inherit;
+    font-size: var(--exp-cf-input-size);
+    line-height: 1.4;
+    transition: border-color 150ms var(--ease-out-cubic), box-shadow 150ms var(--ease-out-cubic);
+  }
+
+  .exp-cart-form__input,
+  .exp-cart-form__select {
+    height: var(--minimum-touch-target);
+    min-height: var(--minimum-touch-target);
+    padding: 0 14px;
+  }
+
+  .exp-cart-form__input--tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .exp-cart-form__input::placeholder,
+  .exp-cart-form__phone-input::placeholder {
+    color: var(--exp-cf-text-muted);
+    opacity: 1;
+  }
+
+  .exp-cart-form__input:hover:not(:disabled),
+  .exp-cart-form__select:hover:not(:disabled) {
+    border-color: var(--exp-cf-border-hover);
+  }
+
+  .exp-cart-form__input:focus-visible,
+  .exp-cart-form__select:focus-visible {
+    outline: 2px solid var(--exp-cf-focus-ring);
+    outline-offset: 1px;
+    border-color: var(--exp-cf-border);
+  }
+
+  .exp-cart-form__select:disabled,
+  .exp-cart-form__input:disabled {
+    background-color: var(--exp-cf-surface-muted);
+    color: var(--exp-cf-text-muted);
+    cursor: not-allowed;
+    opacity: 0.75;
+  }
+
+  .exp-cart-form__input[aria-invalid='true'],
+  .exp-cart-form__select[aria-invalid='true'] {
+    border-color: var(--color-error);
+  }
+
+  .exp-cart-form__select-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+    min-width: 0;
+  }
+
+  .exp-cart-form__select {
+    appearance: none;
+    padding-inline-end: 38px;
+    cursor: pointer;
+    text-overflow: ellipsis;
+  }
+
+  .exp-cart-form__select-chevron {
+    position: absolute;
+    inset-inline-end: 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    color: var(--exp-cf-text-muted);
+    pointer-events: none;
+  }
+
+  .exp-cart-form__select-chevron svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  /* Phone Input Group */
+  .exp-cart-form__phone-group {
+    display: flex;
+    align-items: center;
+    box-sizing: border-box;
+    height: var(--minimum-touch-target);
+    min-height: var(--minimum-touch-target);
+    min-width: 0;
+    padding-inline: 14px 12px;
+    gap: 8px;
+    border: 1px solid var(--exp-cf-border-subtle);
+    border-radius: var(--exp-cf-input-radius);
+    background-color: var(--exp-cf-input-bg);
+    transition: border-color 150ms var(--ease-out-cubic);
+  }
+
+  .exp-cart-form__phone-group:hover {
+    border-color: var(--exp-cf-border-hover);
+  }
+
+  .exp-cart-form__phone-group:focus-within {
+    outline: 2px solid var(--exp-cf-focus-ring);
+    outline-offset: 1px;
+    border-color: var(--exp-cf-border);
+  }
+
+  .exp-cart-form__phone-group--invalid {
+    border-color: var(--color-error);
+  }
+
+  .exp-cart-form__phone-prefix {
+    font-size: var(--exp-cf-input-size);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--exp-cf-text-muted);
+    flex-shrink: 0;
+    user-select: none;
+  }
+
+  .exp-cart-form__phone-prefix[hidden],
+  .exp-cart-form__phone-flag[hidden] {
+    display: none;
+  }
+
+  .exp-cart-form__phone-input {
+    flex: 1 1 auto;
+    box-sizing: border-box;
+    min-width: 0;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--exp-cf-input-fg);
+    caret-color: var(--exp-cf-input-fg);
+    font-family: inherit;
+    font-size: var(--exp-cf-input-size);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.4;
+    outline: none;
+  }
+
+  .exp-cart-form__phone-flag {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    color: var(--exp-cf-input-fg);
+  }
+
+  .exp-cart-form__phone-flag svg {
+    width: 22px;
+    height: 16px;
+    display: block;
+  }
+
+  .exp-cart-form__checkbox-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 36px;
+    font-size: var(--exp-cf-input-size);
+    color: var(--exp-cf-input-fg);
+    cursor: pointer;
+  }
+
+  .exp-cart-form__checkbox {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--exp-cf-foreground);
+    cursor: pointer;
+  }
+
+  .exp-cart-form__hint {
+    margin: 0;
+    font-size: var(--font-size--2xs);
+    line-height: 1.4;
+    color: var(--exp-cf-text-muted);
+  }
+
+  .exp-cart-form__hint--inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .exp-cart-form__hint-icon {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+  }
+
+  .exp-cart-form__hint[hidden],
+  .exp-cart-form__error[hidden] {
+    display: none;
+  }
+
+  .exp-cart-form__error {
+    margin: 0;
+    font-size: var(--font-size--2xs);
+    font-weight: 500;
+    line-height: 1.35;
+    color: var(--color-error);
+  }
+
+  /* Buttons */
+  .exp-cart-form__actions {
+    display: grid;
+    gap: var(--gap-sm);
+    margin-block-start: var(--margin-lg);
+  }
+
+  .exp-cart-form__actions--single {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .exp-cart-form__actions--split {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .exp-cart-form__btn {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    min-height: 46px;
+    padding: 10px 18px;
+    border-radius: var(--exp-cf-button-radius);
+    font-family: inherit;
+    font-size: var(--exp-cf-input-size);
+    font-weight: 700;
+    line-height: 1.25;
+    cursor: pointer;
+    transition: background-color 150ms var(--ease-out-cubic), border-color 150ms var(--ease-out-cubic), opacity 150ms var(--ease-out-cubic), transform 120ms var(--ease-out-cubic);
+  }
+
+  .exp-cart-form__btn-icon {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+  }
+
+  .exp-cart-form__btn:focus-visible {
+    outline: 2px solid var(--exp-cf-focus-ring);
+    outline-offset: 2px;
+  }
+
+  .exp-cart-form__btn:active:not(:disabled) {
+    transform: translateY(1px);
+  }
+
+  .exp-cart-form__btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.65;
+  }
+
+  .exp-cart-form__btn--primary {
+    border: 1.5px solid var(--exp-cf-primary);
+    background-color: var(--exp-cf-primary);
+    color: var(--exp-cf-foreground);
+  }
+
+  .exp-cart-form__btn--primary:hover:not(:disabled) {
+    background-color: color-mix(in srgb, var(--exp-cf-primary) 88%, var(--exp-cf-foreground));
+    border-color: color-mix(in srgb, var(--exp-cf-primary) 88%, var(--exp-cf-foreground));
+  }
+
+  .exp-cart-form__btn--secondary {
+    border: 1.5px solid var(--exp-cf-border-subtle);
+    background-color: var(--exp-cf-input-bg);
+    color: var(--exp-cf-input-fg);
+  }
+
+  .exp-cart-form__btn--secondary:hover:not(:disabled) {
+    border-color: var(--exp-cf-border-hover);
+    background-color: var(--exp-cf-surface-muted);
+  }
+
+  .exp-cart-form__spinner {
+    display: none;
+    width: 16px;
+    height: 16px;
+    border: 2px solid currentColor;
+    border-inline-end-color: transparent;
+    border-radius: 50%;
+    animation: exp-cf-spin 650ms linear infinite;
+  }
+
+  .exp-cart-form__btn--loading .exp-cart-form__spinner {
+    display: inline-block;
+  }
+
+  @keyframes exp-cf-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  .exp-cart-form__checkout-lock-note {
+    margin: 0;
+    font-size: var(--font-size--xs);
+    line-height: 1.4;
+    color: var(--color-foreground-subdued);
+    text-align: center;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .exp-cart-form__trigger,
+    .exp-cart-form__trigger-chevron,
+    .exp-cart-form__address-item,
+    .exp-cart-form__crud-btn,
+    .exp-cart-form__dialog-close,
+    .exp-cart-form__loc-btn,
+    .exp-cart-form__delivery-card,
+    .exp-cart-form__step-line-fill,
+    .exp-cart-form__input,
+    .exp-cart-form__select,
+    .exp-cart-form__phone-group,
+    .exp-cart-form__btn {
+      transition: none;
+    }
+
+    .exp-cart-form__spinner {
+      animation: none;
+    }
+  }
+{% endstylesheet %}
+
+{% schema %}
+{
+  "name": "Cart Checkout Form",
+  "tag": null,
+  "settings": [
+    {
+      "type": "header",
+      "content": "Trigger & Address Book"
+    },
+    {
+      "type": "image_picker",
+      "id": "trigger_icon_image",
+      "label": "Custom Trigger Logo / Icon",
+      "info": "Optional. Leave blank to use the built-in location pin icon."
+    },
+    {
+      "type": "text",
+      "id": "trigger_heading",
+      "label": "Empty Trigger Title",
+      "default": "Shipping Address"
+    },
+    {
+      "type": "text",
+      "id": "trigger_empty_text",
+      "label": "Empty Trigger Subtitle",
+      "default": "Add an address to pre-fill checkout automatically"
+    },
+    {
+      "type": "text",
+      "id": "add_address_button_label",
+      "label": "Add Address Label",
+      "default": "Add Address"
+    },
+    {
+      "type": "text",
+      "id": "change_button_label",
+      "label": "Change Address Label",
+      "default": "Change"
+    },
+    {
+      "type": "checkbox",
+      "id": "open_dropdown_by_default",
+      "label": "Expand address list by default",
+      "default": false
+    },
+    {
+      "type": "header",
+      "content": "Google Maps & Current Location"
+    },
+    {
+      "type": "checkbox",
+      "id": "enable_current_location",
+      "label": "Enable Current Location GPS & Google Maps preview",
+      "default": true
+    },
+    {
+      "type": "text",
+      "id": "google_maps_api_key",
+      "label": "Google Maps Geocoding API Key (Optional)",
+      "info": "Leave blank to use Google Maps embed preview + free reverse geocoding automatically. Add an API key for Google Geocoding precision.",
+      "visible_if": "{{ block.settings.enable_current_location }}"
+    },
+    {
+      "type": "header",
+      "content": "Colors"
+    },
+    {
+      "type": "color",
+      "id": "primary_color",
+      "label": "Primary",
+      "default": "#F2CC3A",
+      "info": "Used for primary buttons, active states, and highlights"
+    },
+    {
+      "type": "color",
+      "id": "foreground_color",
+      "label": "Foreground",
+      "default": "#010101",
+      "info": "Text color on brand-colored elements"
+    },
+    {
+      "type": "color",
+      "id": "border_color",
+      "label": "Border Color",
+      "default": "#2E2A39",
+      "info": "Border color for inputs and separators"
+    },
+    {
+      "type": "color",
+      "id": "input_background",
+      "label": "Input Background",
+      "default": "#FFFFFF",
+      "info": "Background color for inputs, textareas, and selectors"
+    },
+    {
+      "type": "color",
+      "id": "input_foreground",
+      "label": "Input Foreground",
+      "default": "#1F2937",
+      "info": "Text and placeholder color for inputs, textareas, and selectors"
+    },
+    {
+      "type": "header",
+      "content": "Shape"
+    },
+    {
+      "type": "range",
+      "id": "input_rounded",
+      "label": "Input Rounded",
+      "min": 0,
+      "max": 32,
+      "step": 1,
+      "unit": "px",
+      "default": 16
+    },
+    {
+      "type": "range",
+      "id": "button_rounded",
+      "label": "Button Rounded",
+      "min": 0,
+      "max": 32,
+      "step": 1,
+      "unit": "px",
+      "default": 16
+    },
+    {
+      "type": "header",
+      "content": "Text Appearance"
+    },
+    {
+      "type": "select",
+      "id": "heading_font",
+      "label": "Heading Font",
+      "options": [
+        {
+          "value": "heading",
+          "label": "Heading"
+        },
+        {
+          "value": "subheading",
+          "label": "Subheading"
+        },
+        {
+          "value": "body",
+          "label": "Body"
+        }
+      ],
+      "default": "heading"
+    },
+    {
+      "type": "range",
+      "id": "heading_font_size",
+      "label": "Heading Size",
+      "min": 14,
+      "max": 28,
+      "step": 1,
+      "unit": "px",
+      "default": 16
+    },
+    {
+      "type": "range",
+      "id": "label_font_size",
+      "label": "Field Label Size",
+      "min": 11,
+      "max": 18,
+      "step": 1,
+      "unit": "px",
+      "default": 13
+    },
+    {
+      "type": "range",
+      "id": "input_font_size",
+      "label": "Input Text Size",
+      "min": 12,
+      "max": 20,
+      "step": 1,
+      "unit": "px",
+      "default": 14
+    },
+    {
+      "type": "header",
+      "content": "Delivery Method"
+    },
+    {
+      "type": "text",
+      "id": "delivery_heading",
+      "label": "Delivery Heading",
+      "default": "Delivery Method"
+    },
+    {
+      "type": "text",
+      "id": "express_label",
+      "label": "Express Title",
+      "default": "Express"
+    },
+    {
+      "type": "text",
+      "id": "express_description",
+      "label": "Express Description",
+      "default": "Regular delivery options"
+    },
+    {
+      "type": "checkbox",
+      "id": "enable_instant_delivery",
+      "label": "Show Instant Delivery Option",
+      "default": true
+    },
+    {
+      "type": "text",
+      "id": "instant_label",
+      "label": "Instant Title",
+      "default": "Instant",
+      "visible_if": "{{ block.settings.enable_instant_delivery }}"
+    },
+    {
+      "type": "text",
+      "id": "instant_description",
+      "label": "Instant Description",
+      "default": "Only available in selected areas",
+      "visible_if": "{{ block.settings.enable_instant_delivery }}"
+    },
+    {
+      "type": "header",
+      "content": "Form Copy & Buttons"
+    },
+    {
+      "type": "text",
+      "id": "step1_label",
+      "label": "Step 1 Tab Label",
+      "default": "Information"
+    },
+    {
+      "type": "text",
+      "id": "step1_heading",
+      "label": "Step 1 Heading",
+      "default": "Recipient Information"
+    },
+    {
+      "type": "text",
+      "id": "step1_button_label",
+      "label": "Step 1 Button Label",
+      "default": "Continue"
+    },
+    {
+      "type": "text",
+      "id": "step2_label",
+      "label": "Step 2 Tab Label",
+      "default": "Detail Address"
+    },
+    {
+      "type": "text",
+      "id": "step2_heading",
+      "label": "Step 2 Heading",
+      "default": "Detail Address"
+    },
+    {
+      "type": "text",
+      "id": "back_button_label",
+      "label": "Back Button Label",
+      "default": "Back"
+    },
+    {
+      "type": "text",
+      "id": "complete_button_label",
+      "label": "Save Address Button Label",
+      "default": "Save Address"
+    },
+    {
+      "type": "text",
+      "id": "checkout_button_label",
+      "label": "Proceed to Checkout Button Label",
+      "default": "Proceed to Checkout"
+    },
+    {
+      "type": "header",
+      "content": "Checkout Behavior & API"
+    },
+    {
+      "type": "checkbox",
+      "id": "require_before_checkout",
+      "label": "Disable Cart Checkout button until an address is saved",
+      "default": false,
+      "info": "When disabled (default), shoppers can check out anytime and any selected address will automatically pre-fill Checkout."
+    },
+    {
+      "type": "text",
+      "id": "checkout_locked_notice",
+      "label": "Locked Checkout Helper Text",
+      "default": "Select or add a shipping address to unlock checkout.",
+      "visible_if": "{{ block.settings.require_before_checkout }}"
+    },
+    {
+      "type": "text",
+      "id": "region_api_base",
+      "label": "Indonesia Region API Base URL",
+      "default": "https://www.emsifa.com/api-wilayah-indonesia/v2",
+      "info": "Open-source Emsifa API v2 endpoint for provinces, cities, districts, and sub-districts."
+    },
+    {
+      "type": "text",
+      "id": "storefront_access_token",
+      "label": "Storefront Access Token (Optional)",
+      "info": "Leave blank to use Shopify Tokenless Storefront API. Add a public token for higher traffic limits."
+    },
+    {
+      "type": "text",
+      "id": "storefront_api_version",
+      "label": "Storefront API Version",
+      "default": "2025-10"
+    },
+    {
+      "type": "header",
+      "content": "t:content.padding"
+    },
+    {
+      "type": "range",
+      "id": "padding-block-start",
+      "label": "t:settings.top",
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "unit": "px",
+      "default": 8
+    },
+    {
+      "type": "range",
+      "id": "padding-block-end",
+      "label": "t:settings.bottom",
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "unit": "px",
+      "default": 8
+    },
+    {
+      "type": "range",
+      "id": "padding-inline-start",
+      "label": "t:settings.left",
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "unit": "px",
+      "default": 0
+    },
+    {
+      "type": "range",
+      "id": "padding-inline-end",
+      "label": "t:settings.right",
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "unit": "px",
+      "default": 0
+    }
+  ],
+  "presets": [
+    {
+      "name": "Cart Checkout Form",
+      "category": "t:categories.forms"
+    }
+  ]
+}
+{% endschema %}

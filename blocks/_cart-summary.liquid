@@ -34,6 +34,9 @@
 >
   <div class="{{ cart_summary_inner_class }}">
     {% render 'cart-summary', accelerated_checkout_buttons_layout: 'vertical', section_id: section.id %}
+    <div class="cart-summary__blocks">
+      {%- content_for 'blocks' -%}
+    </div>
   </div>
 </div>
 
@@ -53,6 +56,18 @@
       padding: var(--padding-5xl);
       grid-row: 1 / -1;
     }
+  }
+
+  .cart-summary__blocks {
+    width: 100%;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap-md);
+  }
+
+  .cart-summary__blocks:empty {
+    display: none;
   }
 
   body:has(#header-group header-component[sticky]) .cart-summary__inner {
@@ -142,6 +157,14 @@
 {
   "name": "t:names.summary",
   "tag": null,
+  "blocks": [
+    {
+      "type": "@theme"
+    },
+    {
+      "type": "@app"
+    }
+  ],
   "settings": [
     {
       "type": "checkbox",
