@@ -86,7 +86,7 @@
         "lastName": {{ customer.last_name | default: '' | json }},
         "phone": {{ customer.phone | default: customer.default_address.phone | default: '' | json }},
         "accountAddressesUrl": {{ routes.account_addresses_url | default: '/account/addresses' | json }},
-        "accountLoginUrl": {{ routes.account_login_url | default: '/account/login' | json }},
+        "accountLoginUrl": {{ routes.storefront_login_url | default: routes.account_login_url | default: '/account/login' | json }},
         "defaultAddressId": {% if customer and customer.default_address %}{{ customer.default_address.id | json }}{% else %}null{% endif %},
         "addresses": [
           {%- if customer -%}
@@ -223,7 +223,7 @@
         {%- else -%}
           <a
             class="exp-cart-form__account-link"
-            href="{{ routes.account_login_url }}"
+            href="{{ routes.storefront_login_url | default: routes.account_login_url }}"
           >
             Sign in to sync
           </a>

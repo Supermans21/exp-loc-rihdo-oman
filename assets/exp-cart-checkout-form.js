@@ -508,17 +508,182 @@ function appendCheckoutPrefillParams(baseUrl, addr) {
 }
 
 /**
- * Merges server Shopify customer addresses with customer-scoped local overrides/additions.
+ * Builds a normalized comparison fingerprint so migrated guest addresses and synced
+ * Shopify account addresses reconcile cleanly without creating duplicate cards.
+ * @param {Record<string, any> | null} addr
+ * @returns {string}
+ */
+function buildAddressFingerprint(addr) {
+  if (!addr) return '';
+  const countryCode = resolveCountryCode(addr.countryCode, addr.country);
+  const provinceCode = resolveProvinceCode(
+    addr.provinceId,
+    addr.provinceName,
+    addr.provinceCode,
+    countryCode
+  );
+  const address2 = buildAddress2Line(
+    addr.apartment,
+    addr.districtName,
+    addr.subdistrictName,
+    addr.subdistrictLine
+  );
+  const clean = (val) =>
+    String(val || '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ');
+
+  const street = clean(addr.detailAddress);
+  const city = clean(addr.cityName);
+  if (!street && !city) return '';
+
+  return [
+    clean(countryCode),
+    clean(addr.firstName),
+    clean(addr.lastName),
+    street,
+    clean(address2),
+    city,
+    clean(provinceCode),
+    clean(addr.postalCode),
+  ].join('|');
+}
+
+/**
+ * Normalizes a local/guest address record into consistent shape.
+ * @param {Record<string, any>} raw
+ * @param {{ email?: string }} [defaults]
+ * @returns {Record<string, any>}
+ */
+function normalizeLocalAddressRecord(raw, defaults = {}) {
+  const countryCode = resolveCountryCode(raw.countryCode, raw.country);
+  const parsedSub = parseAddress2Line(raw.subdistrictLine || '');
+  const apartment = raw.apartment ?? parsedSub.apartment ?? '';
+  const districtName = raw.districtName ?? parsedSub.district ?? '';
+  const subdistrictName = raw.subdistrictName ?? parsedSub.subdistrict ?? '';
+  const subdistrictLine = buildAddress2Line(
+    apartment,
+    countryCode === 'ID' ? districtName : '',
+    countryCode === 'ID' ? subdistrictName : '',
+    raw.subdistrictLine || ''
+  );
+
+  return {
+    ...raw,
+    shopifyId: null,
+    source: 'local',
+    countryCode,
+    country: resolveCountryName(countryCode, raw.country),
+    email: raw.email || defaults.email || '',
+    phone:
+      countryCode === 'ID'
+        ? normalizeIndonesianPhoneDigits(raw.phone || '')
+        : String(raw.phone || '').trim(),
+    provinceId:
+      raw.provinceId ||
+      (countryCode === 'ID' ? resolveEmsifaProvinceId(raw.provinceCode, raw.provinceName) : ''),
+    provinceCode: resolveProvinceCode(
+      raw.provinceId,
+      raw.provinceName,
+      raw.provinceCode,
+      countryCode
+    ),
+    apartment,
+    districtName,
+    subdistrictName,
+    subdistrictLine,
+  };
+}
+
+/**
+ * Preserves cart-specific metadata (GPS coords, Emsifa IDs, delivery method, courier notes)
+ * when reconciling a local/guest address with its matching Shopify account address.
+ * @param {Record<string, any>} accountRecord
+ * @param {Record<string, any>} localAddr
+ * @returns {Record<string, any>}
+ */
+function mergeRichMetadataIntoAccount(accountRecord, localAddr) {
+  const localIsNewer = (Number(localAddr.updatedAt) || 0) >= (Number(accountRecord.updatedAt) || 0);
+  return {
+    ...accountRecord,
+    label:
+      (localIsNewer ? localAddr.label : accountRecord.label) ||
+      accountRecord.label ||
+      localAddr.label ||
+      '',
+    deliveryMethod:
+      (localIsNewer ? localAddr.deliveryMethod : accountRecord.deliveryMethod) ||
+      accountRecord.deliveryMethod ||
+      localAddr.deliveryMethod ||
+      'express',
+    email: accountRecord.email || localAddr.email || '',
+    phone: accountRecord.phone || localAddr.phone || '',
+    provinceId: accountRecord.provinceId || localAddr.provinceId || '',
+    cityId: accountRecord.cityId || localAddr.cityId || '',
+    districtId: accountRecord.districtId || localAddr.districtId || '',
+    districtName: accountRecord.districtName || localAddr.districtName || '',
+    subdistrictId: accountRecord.subdistrictId || localAddr.subdistrictId || '',
+    subdistrictName: accountRecord.subdistrictName || localAddr.subdistrictName || '',
+    apartment: accountRecord.apartment || localAddr.apartment || '',
+    noteCouriers:
+      (localIsNewer ? localAddr.noteCouriers : accountRecord.noteCouriers) ||
+      accountRecord.noteCouriers ||
+      localAddr.noteCouriers ||
+      '',
+    lat:
+      localIsNewer && typeof localAddr.lat === 'number'
+        ? localAddr.lat
+        : typeof accountRecord.lat === 'number'
+          ? accountRecord.lat
+          : typeof localAddr.lat === 'number'
+            ? localAddr.lat
+            : null,
+    lng:
+      localIsNewer && typeof localAddr.lng === 'number'
+        ? localAddr.lng
+        : typeof accountRecord.lng === 'number'
+          ? accountRecord.lng
+          : typeof localAddr.lng === 'number'
+            ? localAddr.lng
+            : null,
+    updatedAt: Math.max(Number(accountRecord.updatedAt) || 0, Number(localAddr.updatedAt) || 0),
+  };
+}
+
+/**
+ * Merges server Shopify customer addresses with customer-scoped local overrides/additions
+ * and migrates any pre-login guest addresses seamlessly without duplicates.
  * @param {Array<Record<string, any>>} accountAddresses
  * @param {{ addresses?: Array<Record<string, any>>, overrides?: Record<string, Record<string, any>>, deletedShopifyIds?: string[], selectedId?: string | null }} localData
- * @returns {{ addresses: Array<Record<string, any>>, selectedId: string | null }}
+ * @param {{ addresses?: Array<Record<string, any>>, selectedId?: string | null } | null} [guestData=null]
+ * @param {{ email?: string }} [customerDefaults]
+ * @returns {{
+ *   addresses: Array<Record<string, any>>,
+ *   selectedId: string | null,
+ *   overrides: Record<string, Record<string, any>>,
+ *   deletedShopifyIds: string[],
+ *   migratedNewAddresses: Array<Record<string, any>>,
+ *   didMigrateGuest: boolean,
+ *   didReconcile: boolean
+ * }}
  */
-function mergeAccountAndLocalAddresses(accountAddresses, localData) {
+function mergeAccountAndLocalAddresses(
+  accountAddresses,
+  localData,
+  guestData = null,
+  customerDefaults = {}
+) {
   const deletedSet = new Set((localData?.deletedShopifyIds || []).map(String));
-  const overrides = localData?.overrides || {};
+  /** @type {Record<string, Record<string, any>>} */
+  const overrides = { ...(localData?.overrides || {}) };
 
   /** @type {Array<Record<string, any>>} */
-  const merged = [];
+  const accountRecords = [];
+  /** @type {Map<string, Record<string, any>>} */
+  const accountByFp = new Map();
+  /** @type {Set<string>} */
+  const usedIds = new Set();
 
   for (const raw of accountAddresses || []) {
     const shopifyId = String(raw.shopifyId || '');
@@ -530,7 +695,7 @@ function mergeAccountAndLocalAddresses(accountAddresses, localData) {
     const parsedSub = parseAddress2Line(raw.subdistrictLine || '');
     const rawPhone = ov.phone ?? raw.phone ?? '';
 
-    merged.push({
+    const record = {
       id,
       shopifyId,
       source: 'account',
@@ -564,34 +729,147 @@ function mergeAccountAndLocalAddresses(accountAddresses, localData) {
       lng: typeof ov.lng === 'number' ? ov.lng : null,
       isDefault: typeof ov.isDefault === 'boolean' ? ov.isDefault : Boolean(raw.isDefault),
       updatedAt: ov.updatedAt || 0,
-    });
+    };
+
+    accountRecords.push(record);
+    usedIds.add(id);
+    const fp = buildAddressFingerprint(record);
+    if (fp && !accountByFp.has(fp)) {
+      accountByFp.set(fp, record);
+    }
   }
+
+  /** @type {Array<Record<string, any>>} */
+  const localRecords = [];
+  /** @type {Map<string, Record<string, any>>} */
+  const localByFp = new Map();
+  let remappedSelectedId = localData?.selectedId || null;
+  let didReconcile = false;
 
   for (const localAddr of localData?.addresses || []) {
     if (!localAddr || !localAddr.id) continue;
     if (localAddr.source === 'account') continue;
-    const countryCode = resolveCountryCode(localAddr.countryCode, localAddr.country);
-    merged.push({
-      ...localAddr,
-      source: 'local',
-      countryCode,
-      country: resolveCountryName(countryCode, localAddr.country),
-      phone:
-        countryCode === 'ID'
-          ? normalizeIndonesianPhoneDigits(localAddr.phone || '')
-          : String(localAddr.phone || '').trim(),
-    });
+
+    const normalized = normalizeLocalAddressRecord(localAddr, customerDefaults);
+    const fp = buildAddressFingerprint(normalized);
+
+    if (fp && accountByFp.has(fp)) {
+      const accountRecord = accountByFp.get(fp);
+      if (accountRecord) {
+        const enriched = mergeRichMetadataIntoAccount(accountRecord, normalized);
+        Object.assign(accountRecord, enriched);
+        overrides[String(accountRecord.shopifyId)] = { ...accountRecord };
+        if (remappedSelectedId === normalized.id) {
+          remappedSelectedId = accountRecord.id;
+        }
+        didReconcile = true;
+        continue;
+      }
+    }
+
+    if (fp && localByFp.has(fp)) {
+      const existingLocal = localByFp.get(fp);
+      if (existingLocal && remappedSelectedId === normalized.id) {
+        remappedSelectedId = existingLocal.id;
+      }
+      didReconcile = true;
+      continue;
+    }
+
+    localRecords.push(normalized);
+    usedIds.add(normalized.id);
+    if (fp) localByFp.set(fp, normalized);
   }
 
+  const guestList = Array.isArray(guestData?.addresses)
+    ? guestData.addresses.filter((item) => item && item.id)
+    : [];
+  const didMigrateGuest = guestList.length > 0;
+  /** @type {Array<Record<string, any>>} */
+  const migratedNewAddresses = [];
+  const guestSelectedSourceId = guestData?.selectedId || null;
+  /** @type {string | null} */
+  let matchedExplicitGuestSelectedId = null;
+  /** @type {string | null} */
+  let firstMigratedTargetId = null;
+  let hasExistingDefault =
+    accountRecords.some((a) => a.isDefault) || localRecords.some((a) => a.isDefault);
+
+  for (const rawGuest of guestList) {
+    const isGuestSelected = Boolean(guestSelectedSourceId && rawGuest.id === guestSelectedSourceId);
+    const guestAddr = normalizeLocalAddressRecord(rawGuest, customerDefaults);
+    const fp = buildAddressFingerprint(guestAddr);
+    /** @type {string} */
+    let targetId;
+
+    if (fp && accountByFp.has(fp)) {
+      const accountRecord = accountByFp.get(fp);
+      const enriched = mergeRichMetadataIntoAccount(/** @type {Record<string, any>} */ (accountRecord), guestAddr);
+      Object.assign(/** @type {Record<string, any>} */ (accountRecord), enriched);
+      overrides[String(enriched.shopifyId)] = { ...enriched };
+      targetId = enriched.id;
+    } else if (fp && localByFp.has(fp)) {
+      const existingLocal = /** @type {Record<string, any>} */ (localByFp.get(fp));
+      if ((Number(guestAddr.updatedAt) || 0) >= (Number(existingLocal.updatedAt) || 0)) {
+        existingLocal.label = guestAddr.label || existingLocal.label;
+        existingLocal.deliveryMethod = guestAddr.deliveryMethod || existingLocal.deliveryMethod;
+        existingLocal.noteCouriers = guestAddr.noteCouriers || existingLocal.noteCouriers;
+        existingLocal.phone = guestAddr.phone || existingLocal.phone;
+        existingLocal.email = guestAddr.email || existingLocal.email;
+        if (typeof guestAddr.lat === 'number' && typeof guestAddr.lng === 'number') {
+          existingLocal.lat = guestAddr.lat;
+          existingLocal.lng = guestAddr.lng;
+        }
+        existingLocal.updatedAt = Math.max(
+          Number(existingLocal.updatedAt) || 0,
+          Number(guestAddr.updatedAt) || 0
+        );
+      }
+      targetId = existingLocal.id;
+    } else {
+      if (!guestAddr.id || usedIds.has(guestAddr.id)) {
+        guestAddr.id = createLocalId();
+      }
+      if (hasExistingDefault) {
+        guestAddr.isDefault = false;
+      } else if (guestAddr.isDefault) {
+        hasExistingDefault = true;
+      }
+      localRecords.push(guestAddr);
+      usedIds.add(guestAddr.id);
+      if (fp) localByFp.set(fp, guestAddr);
+      migratedNewAddresses.push(guestAddr);
+      targetId = guestAddr.id;
+    }
+
+    if (!firstMigratedTargetId) firstMigratedTargetId = targetId;
+    if (isGuestSelected) matchedExplicitGuestSelectedId = targetId;
+  }
+
+  const merged = [...accountRecords, ...localRecords];
   merged.sort((a, b) => Number(Boolean(b.isDefault)) - Number(Boolean(a.isDefault)));
 
-  let selectedId = localData?.selectedId || null;
-  if (!selectedId || !merged.some((a) => a.id === selectedId)) {
+  const guestSelectedTargetId = matchedExplicitGuestSelectedId || firstMigratedTargetId || null;
+  let selectedId = null;
+
+  if (guestSelectedTargetId && merged.some((a) => a.id === guestSelectedTargetId)) {
+    selectedId = guestSelectedTargetId;
+  } else if (remappedSelectedId && merged.some((a) => a.id === remappedSelectedId)) {
+    selectedId = remappedSelectedId;
+  } else {
     const defaultItem = merged.find((a) => a.isDefault) || merged[0] || null;
     selectedId = defaultItem ? defaultItem.id : null;
   }
 
-  return { addresses: merged, selectedId };
+  return {
+    addresses: merged,
+    selectedId,
+    overrides,
+    deletedShopifyIds: Array.from(deletedSet),
+    migratedNewAddresses,
+    didMigrateGuest,
+    didReconcile,
+  };
 }
 
 /**
@@ -767,6 +1045,9 @@ class ExpCartCheckoutForm extends HTMLElement {
   /** @type {string} */
   #syncBannerMessage = '';
 
+  /** @type {Array<Record<string, any>>} */
+  #pendingGuestSyncAddresses = [];
+
   connectedCallback() {
     this.#lifecycleAbort?.abort();
     this.#lifecycleAbort = new AbortController();
@@ -786,6 +1067,14 @@ class ExpCartCheckoutForm extends HTMLElement {
     const active = this.#getSelectedAddress();
     if (active && isAddressCheckoutReady(active) && !this.#isDesignMode) {
       void this.#syncCartAttributes(active).catch(() => {});
+    }
+
+    if (
+      this.#pendingGuestSyncAddresses.length > 0 &&
+      this.#customerContext.isLoggedIn &&
+      !this.#isDesignMode
+    ) {
+      void this.#syncMigratedGuestAddresses(this.#pendingGuestSyncAddresses);
     }
   }
 
@@ -819,8 +1108,11 @@ class ExpCartCheckoutForm extends HTMLElement {
 
   /** @returns {string} */
   get #storageKey() {
-    if (this.#customerContext.isLoggedIn && this.#customerContext.customerId) {
-      return `${CUSTOMER_STORAGE_PREFIX}${this.#customerContext.customerId}`;
+    if (this.#customerContext.isLoggedIn) {
+      const accountKey = this.#customerContext.customerId || this.#customerContext.email;
+      if (accountKey) {
+        return `${CUSTOMER_STORAGE_PREFIX}${String(accountKey).toLowerCase()}`;
+      }
     }
     return GUEST_STORAGE_KEY;
   }
@@ -870,49 +1162,98 @@ class ExpCartCheckoutForm extends HTMLElement {
     }
   }
 
-  /** @returns {Record<string, any>} */
-  #readLocalBucket() {
+  /**
+   * @param {string} key
+   * @returns {Record<string, any>}
+   */
+  #readStorageBucket(key) {
     try {
-      const raw = window.localStorage.getItem(this.#storageKey);
+      const raw = window.localStorage.getItem(key);
       return raw ? JSON.parse(raw) : {};
     } catch {
       return {};
     }
   }
 
-  /** @param {Record<string, any>} bucket */
-  #writeLocalBucket(bucket) {
+  /** @returns {Record<string, any>} */
+  #readLocalBucket() {
+    return this.#readStorageBucket(this.#storageKey);
+  }
+
+  /**
+   * @param {Record<string, any>} bucket
+   * @param {string} [key]
+   * @returns {boolean}
+   */
+  #writeLocalBucket(bucket, key = this.#storageKey) {
     try {
-      window.localStorage.setItem(this.#storageKey, JSON.stringify(bucket));
+      window.localStorage.setItem(key, JSON.stringify(bucket));
+      return true;
     } catch {
       // Ignore storage quota/private-mode errors
+      return false;
+    }
+  }
+
+  #clearGuestBucket() {
+    try {
+      window.localStorage.removeItem(GUEST_STORAGE_KEY);
+    } catch {
+      // Ignore storage errors
     }
   }
 
   #loadAddressBook() {
     const bucket = this.#readLocalBucket();
+    this.#pendingGuestSyncAddresses = [];
 
     if (this.#customerContext.isLoggedIn) {
-      const merged = mergeAccountAndLocalAddresses(this.#customerContext.addresses, bucket);
+      const hasDistinctCustomerKey = this.#storageKey !== GUEST_STORAGE_KEY;
+      const guestBucket = hasDistinctCustomerKey
+        ? this.#readStorageBucket(GUEST_STORAGE_KEY)
+        : null;
+
+      const merged = mergeAccountAndLocalAddresses(
+        this.#customerContext.addresses,
+        bucket,
+        guestBucket,
+        { email: this.#customerContext.email }
+      );
       this.#addresses = merged.addresses;
       this.#selectedAddressId = merged.selectedId;
+
+      if (merged.didMigrateGuest || merged.didReconcile) {
+        const localOnly = this.#addresses.filter((a) => a.source !== 'account');
+        const persisted = this.#writeLocalBucket({
+          addresses: localOnly,
+          overrides: merged.overrides,
+          deletedShopifyIds: merged.deletedShopifyIds,
+          selectedId: this.#selectedAddressId,
+        });
+
+        if (merged.didMigrateGuest && persisted && hasDistinctCustomerKey) {
+          this.#clearGuestBucket();
+        }
+      }
+
+      if (merged.didMigrateGuest) {
+        if (merged.migratedNewAddresses.length > 0) {
+          this.#pendingGuestSyncAddresses = merged.migratedNewAddresses;
+          const count = merged.migratedNewAddresses.length;
+          this.#syncBannerMessage =
+            count === 1
+              ? 'Your address saved before sign-in was carried over to your account.'
+              : `${count} addresses saved before sign-in were carried over to your account.`;
+        } else {
+          this.#syncBannerMessage =
+            'Your address saved before sign-in matched your Shopify account and is ready for checkout.';
+        }
+      }
     } else {
       const savedList = Array.isArray(bucket.addresses) ? bucket.addresses : [];
       this.#addresses = savedList
         .filter((item) => item && item.id)
-        .map((item) => {
-          const countryCode = resolveCountryCode(item.countryCode, item.country);
-          return {
-            ...item,
-            source: 'local',
-            countryCode,
-            country: resolveCountryName(countryCode, item.country),
-            phone:
-              countryCode === 'ID'
-                ? normalizeIndonesianPhoneDigits(item.phone || '')
-                : String(item.phone || '').trim(),
-          };
-        });
+        .map((item) => normalizeLocalAddressRecord(item));
       this.#addresses.sort((a, b) => Number(Boolean(b.isDefault)) - Number(Boolean(a.isDefault)));
 
       if (bucket.selectedId && this.#addresses.some((a) => a.id === bucket.selectedId)) {
@@ -925,11 +1266,11 @@ class ExpCartCheckoutForm extends HTMLElement {
   }
 
   /**
-   * @param {{ overrideShopifyId?: string, overrideData?: Record<string, any>, deletedShopifyId?: string }} [delta]
+   * @param {{ overrideShopifyId?: string, overrideData?: Record<string, any>, extraOverrides?: Record<string, Record<string, any>>, deletedShopifyId?: string }} [delta]
    */
   #saveAddressBookState(delta = {}) {
     const bucket = this.#readLocalBucket();
-    const overrides = { ...(bucket.overrides || {}) };
+    const overrides = { ...(bucket.overrides || {}), ...(delta.extraOverrides || {}) };
     const deletedSet = new Set((bucket.deletedShopifyIds || []).map(String));
 
     if (delta.overrideShopifyId && delta.overrideData) {
@@ -2284,8 +2625,18 @@ class ExpCartCheckoutForm extends HTMLElement {
         updatedAt: Date.now(),
       };
 
+      /** @type {Record<string, Record<string, any>>} */
+      const extraOverrides = {};
       if (record.isDefault) {
-        for (const item of this.#addresses) item.isDefault = false;
+        for (const item of this.#addresses) {
+          if (item.id === record.id) continue;
+          if (item.isDefault) {
+            item.isDefault = false;
+            if (item.source === 'account' && item.shopifyId) {
+              extraOverrides[String(item.shopifyId)] = { ...item, isDefault: false };
+            }
+          }
+        }
       }
 
       if (this.#customerContext.isLoggedIn && !this.#isDesignMode) {
@@ -2311,11 +2662,12 @@ class ExpCartCheckoutForm extends HTMLElement {
       this.#addresses.sort((a, b) => Number(Boolean(b.isDefault)) - Number(Boolean(a.isDefault)));
       this.#selectedAddressId = record.id;
 
-      this.#saveAddressBookState(
-        record.source === 'account' && record.shopifyId
+      this.#saveAddressBookState({
+        ...(record.source === 'account' && record.shopifyId
           ? { overrideShopifyId: String(record.shopifyId), overrideData: record }
-          : {}
-      );
+          : {}),
+        extraOverrides,
+      });
 
       if (!this.#isDesignMode) {
         try {
@@ -2369,6 +2721,45 @@ class ExpCartCheckoutForm extends HTMLElement {
   }
 
   /**
+   * Attempts to sync newly migrated pre-login guest addresses to Shopify Customer Accounts.
+   * Falls back cleanly to customer-scoped browser storage on Shopify New Customer Accounts.
+   * @param {Array<Record<string, any>>} addresses
+   */
+  async #syncMigratedGuestAddresses(addresses) {
+    let syncedCount = 0;
+    let isolated = false;
+
+    for (const addr of addresses) {
+      const status = await this.#trySyncAddressToShopifyAccount('create', addr);
+      if (status === 'synced') {
+        syncedCount += 1;
+      } else if (status === 'new-account-isolated') {
+        isolated = true;
+        break;
+      }
+    }
+
+    if (syncedCount > 0) {
+      this.#syncBannerMessage =
+        syncedCount === 1
+          ? 'Your address saved before sign-in was carried over and synced with your Shopify account.'
+          : `${syncedCount} addresses saved before sign-in were carried over and synced with your Shopify account.`;
+    } else if (isolated) {
+      const count = addresses.length;
+      this.#syncBannerMessage =
+        count === 1
+          ? 'Your address saved before sign-in was carried over to your account on this device.'
+          : `${count} addresses saved before sign-in were carried over to your account on this device.`;
+    }
+
+    this.#pendingGuestSyncAddresses = [];
+    this.#renderSyncBanner();
+    if (this.#syncBannerMessage) {
+      this.#announce(this.#syncBannerMessage);
+    }
+  }
+
+  /**
    * @param {'create' | 'update' | 'delete'} operation
    * @param {Record<string, any>} record
    * @returns {Promise<'synced' | 'new-account-isolated' | 'skipped'>}
@@ -2416,19 +2807,20 @@ class ExpCartCheckoutForm extends HTMLElement {
       const response = await fetch(endpoint, {
         method: 'POST',
         body: formData,
+        credentials: 'same-origin',
         headers: { 'X-Requested-With': 'XMLHttpRequest' },
-        redirect: 'manual',
+        redirect: 'follow',
       });
 
-      if (response.type === 'opaqueredirect') {
-        const loc = response.headers.get('location') || '';
-        if (!loc || loc.startsWith(window.location.origin) || loc.startsWith('/account')) {
-          return 'synced';
-        }
+      if (!response.ok || !response.url) {
         return 'new-account-isolated';
       }
 
-      if (response.ok && response.url.startsWith(window.location.origin)) {
+      const finalUrl = new URL(response.url, window.location.origin);
+      const sameOrigin = finalUrl.origin === window.location.origin;
+      const landedOnAddresses = /\/account\/addresses(?:\/|$)/i.test(finalUrl.pathname);
+
+      if (sameOrigin && landedOnAddresses) {
         return 'synced';
       }
       return 'new-account-isolated';
